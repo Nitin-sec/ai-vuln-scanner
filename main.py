@@ -1,3 +1,21 @@
+from rich.console import Console
+from rich.panel import Panel
+console = Console()
+
+def banner():
+    console.print(Panel.fit("[bold red]THREATMAP INFRA[/bold red]\n[dim]VAPT Scanner & EASM Tool[/dim]", border_style="red"))
+
+banner()
+
+from rich.console import Console
+from rich.panel import Panel
+console = Console()
+
+def banner():
+    console.print(Panel.fit("[bold red]THREATMAP INFRA[/bold red]\n[dim]VAPT Scanner & EASM Tool[/dim]", border_style="red"))
+
+banner()
+
 """
 main.py — ThreatMap Infra entry point.
 """
@@ -324,7 +342,7 @@ def main() -> None:
         db.complete_scan(scan_id)
         evidence_html = "reports/evidence_report.html"
         db.generate_evidence_report(scan_id, evidence_html)
-        excel_path = generate_excel(scan_id=scan_id)
+        excel_path = generate_excel(db)
         progress.advance(task_rep)
 
     # ── Summary ───────────────────────────────────────────────────────
@@ -340,14 +358,10 @@ def main() -> None:
     )
     summary.add_column("Severity",  style="bold",    min_width=12)
     summary.add_column("Count",     justify="right", min_width=7)
-    summary.add_column("SLA",       style="dim")
 
     sla_map = {
         "Critical": ("red",          "Remediate within 24 hours"),
-        "High":     ("bright_red",   "Fix within 7 days"),
-        "Medium":   ("yellow",       "Fix within 30 days"),
         "Low":      ("bright_yellow","Quarterly review"),
-        "Info":     ("blue",         "Informational"),
     }
     for sev, (color, sla) in sla_map.items():
         count = sev_counts.get(sev, 0)
