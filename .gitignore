@@ -1,9 +1,15 @@
-venv/
+# Python
 __pycache__/
 *.pyc
-reports/
+
+# Virtual env
+venv/
+
+# Database
 *.db
-*.xlsx
-.env
-EyeWitness/
-.~lock.*
+
+# Reports / outputs
+reports/
+
+# OS
+.DS_Store
