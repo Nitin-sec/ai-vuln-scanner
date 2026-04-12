@@ -1,187 +1,95 @@
-# 🛡 ThreatMap Infra
+# ThreatMap Infra
 
-> AI-assisted VAPT & External Attack Surface Management (EASM) scanner for professional penetration testers.
-
-ThreatMap Infra automates the reconnaissance and vulnerability scanning phases of a pentest, then produces a formatted Excel report with AI-generated triage for every finding.  It is designed to run on **Kali Linux** and works fully offline with no AI configuration required.
+> Automated VAPT Scanner & External Attack Surface Mapping Tool
 
 ---
 
-## Features
+##  Overview
 
-| Category | What it does |
-|---|---|
-| **Recon** | Subdomain enumeration (Subfinder), live host filtering (httpx) |
-| **Scanning** | Nmap (ports + services), WhatWeb (tech stack), Nikto (web vulns), Gobuster (dirs), SSLScan (TLS) |
-| **Parallelism** | All hosts scanned concurrently via `ThreadPoolExecutor` (2–4 workers) |
-| **Evidence** | HTTP probes (status, title, security headers), optional EyeWitness screenshots |
-| **AI Triage** | Rule-based by default; upgrades to Groq / OpenAI / Ollama via env vars |
-| **Reporting** | Colour-coded Excel report (Cover, Findings, Evidence sheets) + HTML evidence gallery |
-| **Database** | SQLite — all results persisted across runs |
+ThreatMap Infra is a security-focused tool designed to automate **Vulnerability Assessment and Penetration Testing (VAPT)** workflows.
+
+It performs reconnaissance, service discovery, vulnerability identification, and generates structured security reports — enabling faster and more consistent security assessments.
 
 ---
 
-## Requirements
+##  Key Features
 
-### System tools (install on Kali)
-
-```bash
-sudo apt install -y nmap nikto gobuster sslscan whatweb
-go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
-```
-
-### Python
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+*  Automated target discovery & enumeration
+*  Network scanning and service identification
+*  Vulnerability detection using multiple techniques
+*  Structured report generation (VAPT-style)
+*  Intelligent triage and contextual insights
+*  Local processing (no external data dependency)
+*  Designed for authorized security testing only
 
 ---
 
-## Installation
+## How It Works
+
+ThreatMap Infra follows a modular pipeline:
+
+Discovery → Scanning → Analysis → Triage → Reporting
+
+Each stage is designed to simulate real-world assessment workflows used in professional security engagements.
+
+---
+
+## Output
+
+The tool generates structured reports including:
+
+* Executive summary
+* Risk distribution
+* Key findings
+* Detailed vulnerability analysis
+* Remediation recommendations
+
+Reports are designed to be **printable and client-ready**.
+
+---
+
+## Tech Stack
+
+* Python
+* Security tools integration (Nmap, Nikto, etc.)
+* Local processing engine
+* Structured reporting system
+
+---
+
+##  Installation
 
 ```bash
-git clone https://github.com/your-org/ThreatMap-Infra.git
+git clone https://github.com/Nitin-sec/ThreatMap-Infra.git
 cd ThreatMap-Infra
-python -m venv venv
+
+python3 -m venv venv
 source venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
 ---
 
-## Usage
+## ▶ Usage
 
 ```bash
-python main.py
+./run.sh
 ```
 
-You will be prompted for:
-1. Target domain or URL
-2. Authorization confirmation (required)
-3. Scan mode (full subdomain sweep or targeted single-host)
-4. Worker count (1–4)
-
-Scan output is silenced to `reports/scan.log` during the run.  The terminal shows a clean progress display.
-
-### Output files
-
-| File | Description |
-|---|---|
-| `Findings.xlsx` | Colour-coded Excel report (Cover + Findings + Evidence) |
-| `reports/evidence_report.html` | Self-contained HTML screenshot gallery |
-| `reports/scan.log` | Full verbose scan output for review |
-| `threatmap.db` | SQLite database (persists between runs) |
+Follow the prompts to provide a target and output location.
 
 ---
 
-## AI-Powered Triage (Optional)
+## ⚠️ Disclaimer
 
-ThreatMap Infra works **fully without any AI configuration**.  The rule-based engine handles severity scoring, CVSS mapping, and remediation templates automatically.
+This tool is intended for **authorized security testing only**.
 
-To enable AI-enhanced triage, set one of the following before running:
-
-### Option A — Groq (Free, Recommended)
-
-Get a free key at [console.groq.com](https://console.groq.com) — no credit card needed.
-
-```bash
-export THREATMAP_LLM_PROVIDER=groq
-export THREATMAP_LLM_API_KEY=gsk_your_key_here
-```
-
-### Option B — OpenAI
-
-```bash
-pip install openai
-export THREATMAP_LLM_PROVIDER=openai
-export THREATMAP_LLM_API_KEY=sk-your_key_here
-```
-
-### Option C — Local Ollama (Advanced / Air-gapped)
-
-```bash
-# Requires Ollama running: https://ollama.ai
-export THREATMAP_LLM_PROVIDER=ollama
-export THREATMAP_LLM_MODEL=llama3   # optional, defaults to llama3
-```
-
-If Ollama is configured but not reachable, the tool automatically falls back to rule-based triage with no crash.
-
-| User type | Config | Works? |
-|---|---|---|
-| No config | Nothing | ✅ Full functionality, rule-based triage |
-| Free user | Groq key (2 min setup) | ✅ AI-enhanced, free |
-| Enterprise | OpenAI key | ✅ AI-enhanced, their infra |
-| Air-gapped | Ollama running | ✅ Fully local |
-| Ollama off | Ollama configured but down | ✅ Auto-fallback to rules |
+Unauthorized scanning of systems is illegal and strictly prohibited.
+The author is not responsible for misuse of this tool.
 
 ---
 
-## Screenshots (Optional)
+## 📜 License
 
-Install EyeWitness for visual evidence capture:
-
-```bash
-# Option 1 — pip
-pip install eyewitness
-
-# Option 2 — git clone (more up to date)
-git clone https://github.com/FortyNorthSecurity/EyeWitness ~/EyeWitness
-```
-
-If EyeWitness is not found, the evidence layer falls back to HTTP probes (status code, page title, security header audit) which are stored as structured JSON and linked in the Excel report.
-
----
-
-## Project Structure
-
-```
-ThreatMap-Infra/
-├── main.py                 # Entry point — CLI UX and pipeline orchestration
-├── scanner_core.py         # ScannerKit (tool wrappers) + ParallelOrchestrator
-├── ai_triage.py            # Tiered triage engine (rules / Groq / OpenAI / Ollama)
-├── db_manager.py           # SQLite persistence layer
-├── evidence_collector.py   # HTTP probe + optional EyeWitness integration
-├── report_generator.py     # Excel report builder
-├── report_parser.py        # Raw scan output aggregator
-├── authorization_gate.py   # Pre-scan authorization prompt
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
-
----
-
-## What Is NOT in Scope (v1.0)
-
-The following are deliberately excluded to keep the tool practical and maintainable:
-
-- **Docker containerisation** — adds friction for a CLI pentest tool; native Kali install is faster
-- **Web UI / dashboard** — out of scope for v1.0; consider this a v2 feature
-- **Plugin architecture** — premature abstraction; add when there are 3+ community plugins to justify it
-- **Nuclei / automated exploit integration** — scope creep; ThreatMap is a reconnaissance tool
-- **CVE auto-exploitation** — out of scope entirely; this is a VAPT assistant, not an exploit framework
-
----
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit with clear messages
-4. Open a pull request — describe what problem you're solving
-
----
-
-## Legal Notice
-
-ThreatMap Infra is intended for **authorized security testing only**.  You must have explicit written permission from the system owner before scanning any target.  Unauthorized scanning is illegal in most jurisdictions.  The authors accept no liability for misuse.
-
----
-
-## License
-
-MIT License — see `LICENSE` for details.
+This project is licensed under the MIT License.
