@@ -10,7 +10,6 @@ if [ ! -d "$VENV" ]; then
 fi
 
 source "$VENV/bin/activate"
-
 export PYTHONPATH="$SCRIPT_DIR"
 
 echo ""
