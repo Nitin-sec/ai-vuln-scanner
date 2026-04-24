@@ -125,11 +125,13 @@ fi
 inf "Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null
 "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null
+"$VENV_DIR/bin/pip" install --quiet questionary 2>/dev/null || true
 ok "Python packages installed"
 
-# ── Permissions ───────────────────────────────────────────────
+# ── Permissions ─────────────────────────────────────────────
 hdr "Permissions"
 chmod +x run.sh 2>/dev/null && ok "run.sh is executable"
+chmod +x threatmap 2>/dev/null && ok "threatmap runner is executable"
 
 # ── Verification ─────────────────────────────────────────────
 hdr "Tool Verification"
@@ -164,7 +166,7 @@ printf "\n  $(printf '─%.0s' {1..50})\n"
 printf "\n"
 ok "Setup complete."
 printf "\n  ${W}To run ThreatMap:${N}\n"
-printf "  ${D}$ ${N}${W}./run.sh${N}\n\n"
+printf "  ${D}$ ${N}${W}./threatmap${N}\n\n"
 printf "  ${D}Reports will be saved to: ~/ThreatMap-Reports/${N}\n\n"
 
 printf "  ${Y}Optional: Enable AI triage (free, no API key needed):${N}\n"

@@ -15,7 +15,13 @@ logging.getLogger("huggingface_hub").setLevel(logging.CRITICAL)
 logging.getLogger("llama_cpp").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
-import questionary
+try:
+    import questionary
+    HAS_QUESTIONARY = True
+except ImportError:
+    questionary = None
+    HAS_QUESTIONARY = False
+
 from rich.console import Console
 from rich.table   import Table
 from rich.rule    import Rule
@@ -130,7 +136,19 @@ def _show_summary(triage_rows: list, host_id_map: dict) -> bool:
     return True
 
 
-def main() -> None:
+def _confirm_restart() -> bool:
+    if HAS_QUESTIONARY:
+        return questionary.confirm(
+            "  tm> ? scan another target?",
+            default=False,
+            style=Q,
+        ).ask() is True
+    else:
+        ans = input("Scan another target? (y/N): ").strip().lower()
+        return ans == "y"
+
+
+def main() -> bool:
     _banner()
 
     # 1. Target
@@ -139,7 +157,8 @@ def main() -> None:
         validate=lambda v: True if v.strip() else "Target cannot be empty.",
         style=Q,
     ).ask()
-    if not target_input: return
+    if not target_input:
+        return False
     console.print()
 
     target = Target(target_input.strip())
@@ -147,7 +166,8 @@ def main() -> None:
 
     # 2. Authorization
     if not AuthorizationGate().validate(target_input.strip(), report_dir=dirs.report_dir):
-        _e("Scan aborted."); return
+        _e("Scan aborted.")
+        return False
     console.print()
 
     # 3. Mode
@@ -159,7 +179,8 @@ def main() -> None:
         ],
         style=Q,
     ).ask()
-    if not mode_raw: return
+    if not mode_raw:
+        return False
     mode = MODE_AGGRESSIVE if "aggressive" in mode_raw else MODE_BALANCED
     if mode == MODE_AGGRESSIVE:
         console.print()
@@ -206,7 +227,8 @@ def main() -> None:
             "  Some required tools are missing. Continue anyway?",
             default=False, style=Q,
         ).ask():
-            _e("Scan aborted."); return
+            _e("Scan aborted.")
+            return False
         console.print()
 
     db          = DBManager()

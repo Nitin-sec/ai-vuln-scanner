@@ -40,14 +40,13 @@ pip install -r requirements.txt
 
 ---
 
-## Installation
+## Quick Start
 
 ```bash
 git clone https://github.com/your-org/ThreatMap-Infra.git
 cd ThreatMap-Infra
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./install.sh
+./threatmap
 ```
 
 ---
@@ -55,7 +54,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py
+./threatmap
 ```
 
 You will be prompted for:
