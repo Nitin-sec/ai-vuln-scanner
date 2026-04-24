@@ -287,8 +287,8 @@ class PostScanMenu:
         self.log_path   = log_path
         self.output_dir = output_dir
 
-    def run(self) -> None:
-        """Enter the menu loop. Returns only when user chooses Exit."""
+    def run(self) -> str:
+        """Enter the menu loop. Returns 'continue' or 'exit'."""
         show_report_paths(self.paths)
 
         # Auto-open HTML immediately on first entry
@@ -311,13 +311,16 @@ class PostScanMenu:
             except (KeyboardInterrupt, EOFError):
                 console.print()
                 _i("Exiting.")
-                break
+                return "exit"
 
             if choice is None or choice == "exit":
                 console.print()
                 _ok("Session complete. Stay safe.")
                 console.print()
-                break
+                return "exit"
+
+            if choice == "continue":
+                return "continue"
 
             console.print()
             self._handle(choice)
@@ -338,6 +341,7 @@ class PostScanMenu:
 
         choices.append({"name": "📋  Show Report File Paths", "value": "paths"})
         choices.append({"name": "🔍  View Raw Scan Log",      "value": "logs"})
+        choices.append({"name": "🔁  Continue Scanning",      "value": "continue"})
         choices.append({"name": "──────────────────────",    "value": "sep",
                         "disabled": "─"})
         choices.append({"name": "🚪  Exit",                   "value": "exit"})

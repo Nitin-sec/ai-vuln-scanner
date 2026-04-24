@@ -125,19 +125,7 @@ def _show_summary(triage_rows: list, host_id_map: dict) -> bool:
     return True
 
 
-def _confirm_restart() -> bool:
-    if HAS_QUESTIONARY:
-        return questionary.confirm(
-            "  tm> ? scan another target?",
-            default=False,
-            style=Q,
-        ).ask() is True
-    else:
-        ans = input("Scan another target? (y/N): ").strip().lower()
-        return ans == "y"
-
-
-def main() -> bool:
+def main() -> str:
     _banner()
 
     # 1. Target
@@ -147,7 +135,7 @@ def main() -> bool:
         style=Q,
     ).ask()
     if not target_input:
-        return False
+        return "exit"
     console.print()
 
     target = Target(target_input.strip())
@@ -156,7 +144,7 @@ def main() -> bool:
     # 2. Authorization
     if not AuthorizationGate().validate(target_input.strip(), report_dir=dirs.report_dir):
         _e("Scan aborted.")
-        return False
+        return "exit"
     console.print()
 
     # 3. Mode
@@ -169,7 +157,7 @@ def main() -> bool:
         style=Q,
     ).ask()
     if not mode_raw:
-        return False
+        return "exit"
     mode = MODE_AGGRESSIVE if "aggressive" in mode_raw else MODE_BALANCED
     if mode == MODE_AGGRESSIVE:
         console.print()
@@ -217,7 +205,7 @@ def main() -> bool:
             default=False, style=Q,
         ).ask():
             _e("Scan aborted.")
-            return False
+            return "exit"
         console.print()
 
     db          = DBManager()
@@ -296,26 +284,24 @@ def main() -> bool:
     if not has_findings:
         _i(f"Scan log → [cyan]{dirs.log_file}[/cyan]")
         console.print()
-        return True
+        return "exit"
 
     console.print()
 
-    # 9. Interactive menu — loops until Exit
-    PostScanMenu(
+    action = PostScanMenu(
         report_paths=report_paths,
         log_path=dirs.log_file,
         output_dir=save_dir,
     ).run()
 
-    return True
+    return action
 
 
 if __name__ == "__main__":
     try:
         while True:
-            if not main():
-                break
-            if not _confirm_restart():
+            action = main()
+            if action != "continue":
                 break
             console.print()
         console.print("  [green][[✔]][/green]  Goodbye.")
