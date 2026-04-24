@@ -52,6 +52,25 @@ def _tool(name: str) -> Optional[str]:
     return _registry.get(name)
 
 
+def _failure_message(tool: str, status: ToolStatus, error: str) -> str:
+    reason = "execution error"
+    if status == ToolStatus.TIMEOUT:
+        reason = "timed out"
+    elif status == ToolStatus.SKIPPED:
+        reason = "not available in environment"
+    elif error:
+        reason = error
+
+    impact = "this scan area may have reduced coverage"
+    if tool in {"nmap"}:
+        impact = "port and service visibility may be incomplete"
+    elif tool in {"nuclei", "nikto", "gobuster", "whatweb", "wafw00f"}:
+        impact = "web vulnerability visibility may be partial"
+    elif tool in {"whois", "dig", "subfinder", "assetfinder", "httpx"}:
+        impact = "discovery scope may be reduced"
+    return f"{tool} failed ({reason}); {impact}"
+
+
 # ── Target ────────────────────────────────────────────────────────────────────
 
 class Target:
@@ -461,6 +480,9 @@ class ParallelOrchestrator:
         # Run everything
         tool_results = pipeline.run()
         result["tool_status"] = {k: v.status.value for k, v in tool_results.items()}
+        for name, tr in tool_results.items():
+            if tr.status in {ToolStatus.FAILED, ToolStatus.TIMEOUT, ToolStatus.SKIPPED}:
+                log.warning("[%s] %s", target.domain, _failure_message(name, tr.status, tr.error))
 
         log.info("━━━ done: %s  ports=%s ━━━",
                  host, result["open_ports"] or "none")
@@ -480,7 +502,12 @@ class ScannerKit:
         """Run subfinder + assetfinder, merge results, return unique list."""
         subs: set[str] = set()
 
-        sf = run_subfinder(target, dirs)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_sf = ex.submit(run_subfinder, target, dirs)
+            f_af = ex.submit(run_assetfinder, target, dirs)
+            sf = f_sf.result()
+            af = f_af.result()
+
         if sf.ok:
             subs_file = dirs.raw_file("subdomains.txt")
             if Path(subs_file).exists():
@@ -489,7 +516,6 @@ class ScannerKit:
                     if s.strip()
                 )
 
-        af = run_assetfinder(target, dirs)
         if af.ok and af.stdout:
             subs.update(
                 s.strip() for s in af.stdout.splitlines()

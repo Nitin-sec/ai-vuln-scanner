@@ -20,6 +20,7 @@ import os
 import time
 import threading
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -108,12 +109,14 @@ class EvidenceCollector:
                 results[url] = evidence
             self._save_json(url, evidence, output_dir)
 
-        threads = [
-            threading.Thread(target=_probe, args=(h,), daemon=True)
-            for h in hosts
-        ]
-        for t in threads: t.start()
-        for t in threads: t.join(timeout=20)
+        workers = min(8, max(1, len(hosts)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_probe, h) for h in hosts]
+            for future in as_completed(futures, timeout=30):
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.warning("[Evidence] probe worker failed: %s", exc)
 
         ok = sum(1 for e in results.values() if e.get("status_code"))
         logger.info("[Evidence] HTTP probed %d/%d hosts successfully", ok, len(hosts))

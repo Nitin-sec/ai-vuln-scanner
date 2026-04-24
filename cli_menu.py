@@ -16,13 +16,13 @@ import os
 import shutil
 import subprocess
 import sys
+import json
 from pathlib import Path
 from typing import Optional
 
 import questionary
 from rich.console import Console
 from rich.rule import Rule
-from rich.syntax import Syntax
 
 from scan_logger import get_logger
 
@@ -74,53 +74,62 @@ def open_in_browser(html_path: str) -> bool:
     return False
 
 
-def export_libreoffice(txt_path: str, output_dir: str) -> Optional[str]:
+def _open_file(path: str) -> bool:
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(path)  # type: ignore[attr-defined]
+            return True
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        if shutil.which(opener):
+            subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+    except Exception as exc:
+        log.warning("[menu] file open failed: %s", exc)
+    return False
+
+
+def export_excel(json_path: str, output_dir: str) -> Optional[str]:
     """
-    Convert TXT report → ODT using LibreOffice headless.
-    If LibreOffice not available, saves a copy as .txt with clear instructions.
-    Returns path to created file.
+    Export vulnerability data to Excel (.xlsx) from JSON report output.
     """
-    if not txt_path or not Path(txt_path).is_file():
-        _e(f"TXT report not found: {txt_path}")
+    if not json_path or not Path(json_path).is_file():
+        _e(f"JSON report not found: {json_path}")
+        return None
+
+    try:
+        import openpyxl
+    except Exception:
+        _e("Excel export unavailable: install/openpyxl dependency issue.")
         return None
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    report_data = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    findings = report_data.get("findings", [])
 
-    # Try LibreOffice headless conversion
-    lo_bin = shutil.which("libreoffice") or shutil.which("soffice")
-    if lo_bin:
-        try:
-            _i("Converting to ODT via LibreOffice...")
-            result = subprocess.run(
-                [lo_bin, "--headless", "--convert-to", "odt",
-                 "--outdir", str(out_dir), txt_path],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0:
-                # LibreOffice names it <original_stem>.odt
-                stem   = Path(txt_path).stem
-                odt    = out_dir / f"{stem}.odt"
-                if odt.exists():
-                    _ok(f"ODT saved: [cyan]{odt}[/cyan]")
-                    return str(odt)
-        except subprocess.TimeoutExpired:
-            _w("LibreOffice conversion timed out")
-        except Exception as exc:
-            log.warning("[menu] LibreOffice conversion failed: %s", exc)
+    workbook = openpyxl.Workbook()
+    ws = workbook.active
+    ws.title = "Vulnerabilities"
+    ws.append(["Host", "Severity", "Description", "Remediation", "Confidence"])
 
-    # Fallback: save plain text copy, explain how to open
-    stem    = Path(txt_path).stem
-    txt_out = out_dir / f"{stem}_export.txt"
-    shutil.copy2(txt_path, txt_out)
-    _w("LibreOffice not found — saved plain text instead:")
-    console.print(f"  [cyan]{txt_out}[/cyan]")
-    console.print()
-    console.print("  [dim]To install LibreOffice:[/dim]")
-    console.print("  [white]sudo apt install libreoffice[/white]")
-    console.print()
-    console.print("  [dim]Or open the .txt file in any word processor and save as .odt[/dim]")
-    return str(txt_out)
+    for finding in findings:
+        ws.append([
+            f"{finding.get('host', '')}:{finding.get('port', '')}",
+            finding.get("severity", ""),
+            finding.get("observation", "") or finding.get("detail", ""),
+            finding.get("remediation", ""),
+            finding.get("confidence", "Medium"),
+        ])
+
+    for col in ("A", "B", "C", "D", "E"):
+        ws.column_dimensions[col].width = 28 if col in ("C", "D") else 22
+
+    xlsx_path = out_dir / f"{Path(json_path).stem}.xlsx"
+    workbook.save(xlsx_path)
+    _ok(f"Excel report saved: [cyan]{xlsx_path}[/cyan]")
+    if not _open_file(str(xlsx_path)):
+        _i(f"Open manually: [cyan]{xlsx_path}[/cyan]")
+    return str(xlsx_path)
 
 
 def show_logs(log_path: str, tail_lines: int = 30) -> None:
@@ -236,9 +245,9 @@ class PostScanMenu:
         if html and Path(html).is_file():
             choices.append({"name": "📄  View HTML Report (browser)", "value": "html"})
 
-        txt = self.paths.get("txt","")
-        if txt and Path(txt).is_file():
-            choices.append({"name": "📝  Export as LibreOffice (.odt)", "value": "odt"})
+        js = self.paths.get("json","")
+        if js and Path(js).is_file():
+            choices.append({"name": "📊  Export as Excel (.xlsx)", "value": "xlsx"})
 
         choices.append({"name": "📋  Show Report File Paths", "value": "paths"})
         choices.append({"name": "🔍  View Raw Scan Log",      "value": "logs"})
@@ -257,12 +266,12 @@ class PostScanMenu:
                 else:
                     _e("HTML report was not generated.")
 
-            elif choice == "odt":
-                txt = self.paths.get("txt","")
-                if txt:
-                    export_libreoffice(txt, self.output_dir)
+            elif choice == "xlsx":
+                js = self.paths.get("json","")
+                if js:
+                    export_excel(js, self.output_dir)
                 else:
-                    _e("Text report was not generated.")
+                    _e("JSON report was not generated.")
 
             elif choice == "paths":
                 show_report_paths(self.paths)

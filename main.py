@@ -82,7 +82,7 @@ def _banner() -> None:
     info.add_row("[dim]Version[/dim]",   "[white]1.0[/white]  [dim]·  VAPT + EASM Scanner[/dim]")
     info.add_row("[dim]Platform[/dim]",  "[white]Kali Linux[/white]  [dim]·  Authorized use only[/dim]")
     info.add_row("[dim]Storage[/dim]",   "[white]100% Local[/white]  [dim]·  No data leaves your machine[/dim]")
-    info.add_row("[dim]AI Triage[/dim]", "[white]SLM / Groq / Rule-based[/white]")
+    info.add_row("[dim]AI Analysis[/dim]", "[white]Optional Enhancement[/white]")
     console.print(info)
     console.print()
     console.print(Rule(style="dim red"))
@@ -221,7 +221,7 @@ def main() -> None:
         console=console, transient=False,
     ) as progress:
 
-        disc = progress.add_task("Discovery", total=3)
+        disc = progress.add_task("[Discovery] Target Expansion", total=3)
         if full_scan:
             subs = ScannerKit.discover_subdomains(target, dirs)
             progress.advance(disc); progress.advance(disc)
@@ -231,7 +231,7 @@ def main() -> None:
             live_hosts = [target.url]
             progress.update(disc, completed=3)
 
-        task_scan    = progress.add_task("Scanning hosts", total=len(live_hosts))
+        task_scan    = progress.add_task("[Scanning] Host & Port Analysis", total=len(live_hosts))
         orchestrator = ParallelOrchestrator(mode=mode)
         scan_results : dict[str,dict] = {}
         lock = threading.Lock()
@@ -255,19 +255,19 @@ def main() -> None:
             progress.advance(task_db)
 
         http_hosts = [h for h in host_id_map if h.startswith("http")]
-        task_ev = progress.add_task("Evidence collection", total=max(len(http_hosts),1))
+        task_ev = progress.add_task("[Web Analysis] HTTP Evidence Collection", total=max(len(http_hosts),1))
         if http_hosts:
             EvidenceCollector().probe_hosts(hosts=http_hosts, output_dir=dirs.report_dir)
         progress.update(task_ev, completed=max(len(http_hosts),1))
 
-        task_ai = progress.add_task("AI Triage", total=1)
+        task_ai = progress.add_task("[Vulnerability Analysis] Risk Classification", total=1)
         with contextlib.redirect_stderr(io.StringIO()):
             run_ai_triage(db=db, scan_id=scan_id, raw_dir=dirs.raw_dir, report_dir=dirs.report_dir)
         progress.advance(task_ai)
 
         db.complete_scan(scan_id)
 
-        task_rep = progress.add_task("Generating reports", total=1)
+        task_rep = progress.add_task("[Report Generation] Building Output Files", total=1)
         report_paths = generate_all_reports(db=db, scan_id=scan_id, output_dir=save_dir)
         progress.advance(task_rep)
 
@@ -282,9 +282,9 @@ def main() -> None:
 
     ai_n = sum(1 for r in triage_rows if r["ai_enhanced"])
     if ai_n > 0:
-        _ok(f"AI triage enriched [bold]{ai_n}[/bold] of {len(triage_rows)} findings")
+        _ok("AI analysis completed")
     else:
-        _w("AI used rule-based fallback — set THREATMAP_LLM_PROVIDER=groq for AI")
+        _w("AI-enhanced analysis unavailable — using standard analysis")
     console.print()
 
     # 9. Interactive menu — loops until Exit

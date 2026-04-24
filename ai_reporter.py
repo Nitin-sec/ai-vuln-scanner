@@ -73,6 +73,7 @@ class Finding:
     module:       str
     risk:         str
     remediation:  str
+    confidence:   str
     ai_enhanced:  bool = False
     ai_summary:   str  = ""
 
@@ -85,7 +86,7 @@ class ScanReport:
     completed_at:str
     hosts_count: int
     findings:    list[Finding] = field(default_factory=list)
-    ai_provider: str = "rule_based"
+    ai_provider: str = "standard"
     generated_at:str = field(default_factory=lambda: datetime.now().isoformat())
 
     @property
@@ -109,20 +110,21 @@ def _detect_provider() -> str:
     if os.getenv("THREATMAP_SLM_DISABLE","") != "1" and ram >= MIN_RAM_FOR_SLM_GB:
         slm_dir = Path.home() / ".threatmap" / "models"
         if any(slm_dir.glob("*.gguf")):
-            return "slm"
+            return "ai-enhanced"
 
     provider = os.getenv("THREATMAP_LLM_PROVIDER","").lower()
     key      = os.getenv("THREATMAP_LLM_API_KEY","")
     if provider in ("groq","openai","gemini") and key:
-        return provider
-
-    ram_str = f"{ram:.1f}GB available"
-    if ram < MIN_RAM_FOR_SLM_GB:
-        log.info("[reporter] RAM too low for SLM (%s < %.1fGB) — using templates",
-                 ram_str, MIN_RAM_FOR_SLM_GB)
-    else:
-        log.info("[reporter] no AI provider configured — using templates")
+        return "ai-enhanced"
     return "none"
+
+
+def _confidence_from_cvss(cvss: float) -> str:
+    if cvss >= 7.0:
+        return "High"
+    if cvss >= 4.0:
+        return "Medium"
+    return "Low"
 
 
 # ── AI explanation (per finding) ─────────────────────────────────────────────
@@ -293,7 +295,7 @@ class AIReporter:
 
     def __init__(self) -> None:
         self.provider = _detect_provider()
-        log.info("[reporter] provider: %s", self.provider)
+        log.info("[reporter] AI analysis mode initialized")
 
     def build(self, db, scan_id: int) -> ScanReport:
         """Pull triage rows from DB, build structured ScanReport."""
@@ -335,6 +337,7 @@ class AIReporter:
                 module      = d.get("impacted_module","Network Service"),
                 risk        = d.get("risk_impact","") or d.get("business_impact",""),
                 remediation = d.get("remediation","") or d.get("risk_summary",""),
+                confidence  = _confidence_from_cvss(float(d.get("cvss_score",0.0))),
             ))
 
         report = ScanReport(
@@ -344,7 +347,7 @@ class AIReporter:
             completed_at = meta["completed_at"],
             hosts_count  = len(meta["hosts"]),
             findings     = findings,
-            ai_provider  = self.provider,
+            ai_provider  = "ai-enhanced" if self.provider != "none" else "standard",
         )
 
         # Enrich findings with AI or template explanations
@@ -401,6 +404,7 @@ class AIReporter:
                     "module":      f.module,
                     "risk":        f.risk,
                     "remediation": f.remediation,
+                    "confidence":  f.confidence,
                     "ai_enhanced": f.ai_enhanced,
                     "explanation": f.ai_summary,
                 }
@@ -423,7 +427,7 @@ class AIReporter:
             f"  Scan Mode    : {report.scan_mode.title()}",
             f"  Date         : {report.generated_at[:10]}",
             f"  Hosts Scanned: {report.hosts_count}",
-            f"  AI Provider  : {report.ai_provider}",
+            f"  Analysis     : {'AI-enhanced' if report.ai_provider == 'ai-enhanced' else 'Standard'}",
             "",
             "  RISK SUMMARY",
             "  " + "-" * 40,
@@ -454,6 +458,7 @@ class AIReporter:
                 f"     Module     : {f.module}",
                 f"     Risk       : {f.risk or 'See remediation below.'}",
                 f"     Remediation: {f.remediation}",
+                f"     Confidence : {f.confidence}",
             ]
             if f.ai_summary:
                 lines += [
@@ -534,11 +539,11 @@ class AIReporter:
                       'title="AI-enhanced explanation">✦</span>') if f.ai_enhanced else ""
             explanation_row = ""
             if f.ai_summary:
-                src = "AI" if f.ai_enhanced else "template"
+                src = "AI-enhanced" if f.ai_enhanced else "standard"
                 explanation_row = (
                     f'<tr style="background:{rbg}">'
                     f'<td></td>'
-                    f'<td colspan="6" style="font-size:11px;color:#555;padding:4px 12px 10px;'
+                    f'<td colspan="7" style="font-size:11px;color:#555;padding:4px 12px 10px;'
                     f'border-bottom:1px solid #dee2e6;font-style:italic">'
                     f'💬 {esc(f.ai_summary)} '
                     f'<span style="color:#bbb;font-size:10px">[{src}]</span>'
@@ -553,17 +558,17 @@ class AIReporter:
                 f'<td style="padding:10px;font-size:11px;color:#777;text-align:center">{esc(f.module)}</td>'
                 f'<td style="padding:10px">{badge(f.severity)}'
                 f'<br><span style="font-size:10px;color:#999">CVSS {f.cvss}</span></td>'
+                f'<td style="padding:10px;font-size:11px;color:#555">{esc(f.confidence)}</td>'
                 f'<td style="padding:10px;font-size:11px">{esc(f.remediation)}</td>'
                 f'</tr>'
                 + explanation_row
             )
 
         ai_note = (
-            f"AI explanations generated by {report.ai_provider}. "
-            "All findings are based strictly on scan tool output. "
-            "No vulnerabilities were assumed or invented."
-            if report.ai_provider != "none"
-            else "Reports generated using rule-based templates (no AI configured)."
+            "AI-enhanced analysis was applied to explain findings in simpler terms. "
+            "All findings are based strictly on scan tool output."
+            if report.ai_provider == "ai-enhanced"
+            else "AI-enhanced analysis was unavailable; standard analysis templates were used."
         )
 
         html = f"""<!DOCTYPE html>
@@ -603,7 +608,7 @@ tr{{page-break-inside:avoid}}}}
     <span class="ml">Report Date</span>  <span class="mv">{report.generated_at[:10]}</span>
     <span class="ml">Scan Mode</span>    <span class="mv">{report.scan_mode.title()}</span>
     <span class="ml">Hosts Scanned</span><span class="mv">{report.hosts_count}</span>
-    <span class="ml">AI Provider</span>  <span class="mv">{report.ai_provider}</span>
+    <span class="ml">Analysis</span>  <span class="mv">{'AI-enhanced' if report.ai_provider == 'ai-enhanced' else 'Standard'}</span>
     <span class="ml">Classification</span><span class="mv">CONFIDENTIAL — Authorised Recipients Only</span>
   </div>
   <div class="sev-row">{sev_boxes}</div>
@@ -625,6 +630,7 @@ tr{{page-break-inside:avoid}}}}
   <th style="width:160px">Detail / Risk</th>
   <th style="width:110px">Module</th>
   <th style="width:95px">Severity</th>
+  <th style="width:85px">Confidence</th>
   <th>Remediation</th>
 </tr></thead>
 <tbody>{rows_html}</tbody>

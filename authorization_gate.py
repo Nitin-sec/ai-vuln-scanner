@@ -50,7 +50,7 @@ class AuthorizationGate:
 
     def validate(self, target: str, report_dir: str = ".") -> bool:
         console.print()
-        console.print(Panel(DISCLAIMER, border_style="yellow", padding=(1, 3)))
+        console.print(Panel.fit(DISCLAIMER, border_style="yellow", padding=(1, 3)))
         console.print()
 
         confirmed = questionary.confirm(

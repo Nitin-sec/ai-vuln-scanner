@@ -106,7 +106,7 @@ def run_tool(
         except subprocess.TimeoutExpired:
             _kill_process_tree(proc, name)
             elapsed = time.perf_counter() - t0
-            log.warning("[%s] timed out after %ds — process killed", name, timeout)
+            log.warning("[%s] did not finish in %ds; process stopped to keep scan responsive", name, timeout)
             return ToolResult(
                 tool=name,
                 status=ToolStatus.TIMEOUT,
@@ -124,7 +124,7 @@ def run_tool(
                               elapsed=elapsed, stdout=stdout, stderr=stderr,
                               exit_code=proc.returncode)
         else:
-            log.warning("[%s] exited %d in %.1fs", name, proc.returncode, elapsed)
+            log.warning("[%s] command failed with exit code %d (%.1fs)", name, proc.returncode, elapsed)
             return ToolResult(tool=name, status=ToolStatus.FAILED,
                               elapsed=elapsed, stdout=stdout, stderr=stderr,
                               exit_code=proc.returncode,
@@ -132,13 +132,13 @@ def run_tool(
 
     except FileNotFoundError:
         elapsed = time.perf_counter() - t0
-        log.warning("[%s] binary not found: %s", name, cmd[0])
+        log.warning("[%s] tool is not installed or not in PATH: %s", name, cmd[0])
         return ToolResult(tool=name, status=ToolStatus.SKIPPED,
                           elapsed=elapsed,
                           error=f"Binary not found: {cmd[0]}")
     except PermissionError as exc:
         elapsed = time.perf_counter() - t0
-        log.warning("[%s] permission error: %s", name, exc)
+        log.warning("[%s] could not run due to permission issue: %s", name, exc)
         return ToolResult(tool=name, status=ToolStatus.FAILED,
                           elapsed=elapsed, error=str(exc))
     except Exception as exc:
