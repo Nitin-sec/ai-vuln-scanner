@@ -5,7 +5,7 @@ Single-step flow:
   1. Display legal disclaimer panel
   2. One confirm prompt — Yes / No
   3. Cloud provider detection adds a one-line warning + one extra confirm
-  4. Audit log written to reports/authorization_log.txt
+  4. Audit log written to the active scan report directory
 """
 
 import socket
@@ -48,9 +48,9 @@ is not responsible for unauthorized or illegal use.[/dim]\
 
 class AuthorizationGate:
 
-    def validate(self, target: str) -> bool:
+    def validate(self, target: str, report_dir: str = ".") -> bool:
         console.print()
-        console.print(Panel(DISCLAIMER, border_style="yellow", padding=(1, 3)))
+        console.print(Panel.fit(DISCLAIMER, border_style="yellow", padding=(1, 3)))
         console.print()
 
         confirmed = questionary.confirm(
@@ -77,10 +77,10 @@ class AuthorizationGate:
             if not ok:
                 return False
 
-        self._write_audit_log(target, cloud)
+        self._write_audit_log(target, cloud, report_dir)
         console.print(
             f"\n[bold green]✔  Authorization confirmed.[/bold green]  "
-            f"[dim]Logged → reports/authorization_log.txt[/dim]\n"
+            f"[dim]Logged → {report_dir}/authorization_log.txt[/dim]\n"
         )
         return True
 
@@ -112,8 +112,8 @@ class AuthorizationGate:
         return "a cloud / CDN provider"
 
     @staticmethod
-    def _write_audit_log(target: str, cloud: str | None) -> None:
-        os.makedirs("reports", exist_ok=True)
+    def _write_audit_log(target: str, cloud: str | None, report_dir: str) -> None:
+        os.makedirs(report_dir, exist_ok=True)
         entry = (
             f"\n{'='*60}\n"
             f"AUTHORIZED  {datetime.datetime.now(datetime.timezone.utc).isoformat()}\n"
@@ -121,5 +121,6 @@ class AuthorizationGate:
             f"  Cloud  : {cloud or 'No'}\n"
             f"{'='*60}\n"
         )
-        with open("reports/authorization_log.txt", "a", encoding="utf-8") as f:
+        log_path = Path(report_dir) / "authorization_log.txt"
+        with open(log_path, "a", encoding="utf-8") as f:
             f.write(entry)

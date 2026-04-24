@@ -250,6 +250,18 @@ class DBManager:
         with self._conn() as conn:
             conn.execute("DELETE FROM triage")
 
+    def delete_triage_by_scan(self, scan_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                DELETE FROM triage
+                WHERE host_id IN (
+                    SELECT id FROM hosts WHERE scan_id=?
+                )
+                """,
+                (scan_id,),
+            )
+
     def insert_triage(self, record: dict) -> int:
         """
         Save ALL triage fields — including the four AI-generated columns.
@@ -313,6 +325,25 @@ class DBManager:
                         ELSE 5
                     END ASC
                 """
+            ).fetchall()
+
+    def get_triage_by_scan(self, scan_id: int):
+        with self._conn() as conn:
+            return conn.execute(
+                """
+                SELECT t.*
+                FROM triage t
+                JOIN hosts h ON h.id = t.host_id
+                WHERE h.scan_id=?
+                ORDER BY
+                    t.priority_rank ASC,
+                    CASE t.severity
+                        WHEN 'Critical' THEN 1 WHEN 'High'   THEN 2
+                        WHEN 'Medium'   THEN 3 WHEN 'Low'    THEN 4
+                        ELSE 5
+                    END ASC
+                """,
+                (scan_id,),
             ).fetchall()
 
     # ── Lightweight evidence summary ──────────────────────────────────────

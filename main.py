@@ -1,115 +1,69 @@
 """
 main.py — ThreatMap Infra v1.0
-Metasploit-style UX. Asks user where to save report. All data local.
+Full flow: banner → target → auth → options → scan → AI report → menu
+Program does NOT exit until user selects Exit from menu.
 """
 
-import logging
-import os
-import sys
-import shutil
-import platform
-import subprocess
-import threading
-import warnings
-from pathlib import Path
+import contextlib, io, logging, os, shutil, subprocess, sys, threading, warnings
 from datetime import datetime
+from pathlib import Path
 
-# Suppress third-party noise early
 warnings.filterwarnings("ignore")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("huggingface_hub").setLevel(logging.CRITICAL)
+logging.getLogger("llama_cpp").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
-import questionary
+try:
+    import questionary
+    HAS_QUESTIONARY = True
+except ImportError:
+    questionary = None
+    HAS_QUESTIONARY = False
+
 from rich.console import Console
-from rich.table import Table
-from rich.rule import Rule
+from rich.table   import Table
+from rich.rule    import Rule
 from rich.progress import (
     Progress, SpinnerColumn, BarColumn,
     TextColumn, TimeElapsedColumn, TaskProgressColumn,
 )
 from rich import box
 
-from scanner_core import (
+from scan_logger    import configure as configure_logging, get_logger
+from env_check      import ToolRegistry, ScanDirs
+from scanner_core   import (
     Target, ScannerKit, ParallelOrchestrator,
     MODE_BALANCED, MODE_AGGRESSIVE,
 )
-from report_parser import ThreatMapParser
-from db_manager import DBManager
+from db_manager     import DBManager
 from evidence_collector import EvidenceCollector
-from report_generator import generate_excel
-from ai_triage import run_ai_triage
+from ai_triage      import run_ai_triage
+from ai_reporter    import generate_all_reports
+from cli_menu       import PostScanMenu
 from authorization_gate import AuthorizationGate
+from severity import SEVERITY_ORDER
 
+log     = get_logger("main")
 console = Console()
 
-SEV_COLORS = {
-    "Critical": "red",
-    "High":     "orange1",
-    "Medium":   "yellow",
-    "Low":      "green",
-    "Info":     "bright_blue",
-}
-SEV_SLA = {
-    "Critical": "Patch within 24 hours",
+SEV_COLOR = {"Critical":"red","High":"orange1","Medium":"yellow","Low":"green","Info":"bright_blue"}
+SEV_SLA   = {
+    "Critical": "Patch within 24h",
     "High":     "Patch within 7 days",
     "Medium":   "Fix within 30 days",
     "Low":      "Quarterly review",
     "Info":     "Informational",
 }
-SEV_ORDER = ["Critical", "High", "Medium", "Low", "Info"]
+SEV_ORDER = [s.title() for s in SEVERITY_ORDER]
 
 Q = questionary.Style([
-    ("qmark",       "fg:red bold"),
-    ("question",    "fg:white bold"),
-    ("answer",      "fg:cyan bold"),
-    ("pointer",     "fg:red bold"),
-    ("highlighted", "fg:cyan bold"),
-    ("selected",    "fg:cyan"),
-    ("instruction", "fg:gray"),
+    ("qmark","fg:red bold"),("question","fg:white bold"),("answer","fg:cyan bold"),
+    ("pointer","fg:red bold"),("highlighted","fg:cyan bold"),("selected","fg:cyan"),
+    ("instruction","fg:gray"),
 ])
 
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-
-def _configure_logging(log_path: str) -> None:
-    root = logging.getLogger("threatmap")
-    root.setLevel(logging.DEBUG)
-    root.handlers.clear()
-    fh = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-        datefmt="%H:%M:%S",
-    ))
-    root.addHandler(fh)
-    root.propagate = False
-
-
-# ── Env ───────────────────────────────────────────────────────────────────────
-
-def ensure_env() -> None:
-    """Create a fresh reports/ working dir each run."""
-    if os.path.exists("reports"):
-        shutil.rmtree("reports")
-    os.makedirs("reports")
-
-
-def open_file(path: str) -> None:
-    try:
-        if platform.system() == "Linux":
-            subprocess.Popen(["xdg-open", path],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif platform.system() == "Darwin":
-            subprocess.Popen(["open", path])
-        elif platform.system() == "Windows":
-            os.startfile(path)
-    except Exception:
-        pass
-
-
-# ── Status printers (Metasploit style) ───────────────────────────────────────
 
 def _i(msg):  console.print(f"  [bold blue][[*]][/bold blue]  {msg}")
 def _ok(msg): console.print(f"  [bold green][[+]][/bold green]  {msg}")
@@ -117,10 +71,7 @@ def _w(msg):  console.print(f"  [bold yellow][[!]][/bold yellow]  {msg}")
 def _e(msg):  console.print(f"  [bold red][[-]][/bold red]  {msg}")
 
 
-# ── Banner ────────────────────────────────────────────────────────────────────
-
 def _banner() -> None:
-    console.print()
     for line in [
         "  ████████╗██╗  ██╗██████╗ ███████╗ █████╗ ████████╗███╗   ███╗ █████╗ ██████╗  ",
         "     ██╔══╝██║  ██║██╔══██╗██╔════╝██╔══██╗╚══██╔══╝████╗ ████║██╔══██╗██╔══██╗ ",
@@ -131,306 +82,230 @@ def _banner() -> None:
     ]:
         console.print(f"[bold red]{line}[/bold red]")
     console.print()
-
-    info = Table.grid(padding=(0, 4))
-    info.add_column(min_width=12)
-    info.add_column()
-    info.add_row("[dim]Version[/dim]",  "[white]1.0[/white]  [dim]·  VAPT + EASM Scanner[/dim]")
-    info.add_row("[dim]Platform[/dim]", "[white]Kali Linux[/white]  [dim]·  Authorized use only[/dim]")
-    info.add_row("[dim]Storage[/dim]",  "[white]100% Local[/white]  [dim]·  No data leaves your machine[/dim]")
-    info.add_row("[dim]AI Triage[/dim]","[white]SLM / Groq / OpenAI / Rule-based[/white]")
+    info = Table.grid(padding=(0,4))
+    info.add_column(min_width=12); info.add_column()
+    info.add_row("[dim]Version[/dim]",   "[white]1.0[/white]  [dim]·  VAPT + EASM Scanner[/dim]")
+    info.add_row("[dim]Platform[/dim]",  "[white]Kali Linux[/white]  [dim]·  Authorized use only[/dim]")
+    info.add_row("[dim]Storage[/dim]",   "[white]100% Local[/white]  [dim]·  No data leaves your machine[/dim]")
+    info.add_row("[dim]Local Analysis (SLM)[/dim]", "[white]Built-in[/white]")
     console.print(info)
     console.print()
-    console.print(Rule(style="dim red"))
+
+
+def _show_summary(triage_rows: list, host_id_map: dict) -> bool:
     console.print()
-
-
-# ── Scan config ───────────────────────────────────────────────────────────────
-
-def _scan_config(target: str, mode: str, log: str, save_to: str) -> None:
+    console.print(Rule("[dim]Scan Results[/dim]", style="dim green"))
     console.print()
-    console.print(Rule("[dim]Scan Configuration[/dim]", style="dim red"))
-    t = Table.grid(padding=(0, 3))
-    t.add_column(style="dim", min_width=22)
-    t.add_column(style="bold white")
-    mode_str = (
-        "[bold cyan]Balanced[/bold cyan]"
-        if mode == MODE_BALANCED
-        else "[bold red]Aggressive[/bold red]"
-    )
-    t.add_row("  [bold blue][[*]][/bold blue]  Target",  target)
-    t.add_row("  [bold blue][[*]][/bold blue]  Mode",    mode_str)
-    t.add_row("  [bold blue][[*]][/bold blue]  Save to", save_to)
-    t.add_row("  [bold blue][[*]][/bold blue]  Log",     log)
-    t.add_row("  [bold blue][[*]][/bold blue]  Started", datetime.now().strftime("%H:%M:%S"))
-    console.print(t)
-    console.print()
-
-
-# ── Summary ───────────────────────────────────────────────────────────────────
-
-def _summary(triage_rows, host_id_map, excel_path, log_path) -> None:
-    console.print()
-    console.print(Rule("[dim]Scan Complete[/dim]", style="dim green"))
-    console.print()
-
-    sev_counts: dict[str, int] = {}
+    if not triage_rows:
+        _w("No open ports or findings detected.")
+        _i("Tip: try [bold]scanme.nmap.org[/bold] as a safe public test target")
+        return False
+    sev_counts: dict[str,int] = {}
     for r in triage_rows:
-        s = r["severity"] or "Info"
-        sev_counts[s] = sev_counts.get(s, 0) + 1
-
-    ai_count = sum(1 for r in triage_rows if r["ai_enhanced"])
-
-    t = Table(
-        box=box.SIMPLE, show_header=True,
-        header_style="bold dim", pad_edge=False, show_edge=False,
-    )
-    t.add_column("  Severity",  min_width=12, style="bold")
-    t.add_column("  Count",     min_width=7,  justify="right")
-    t.add_column("  SLA",       min_width=26, style="dim")
-
+        sev_counts[r["severity"]] = sev_counts.get(r["severity"], 0) + 1
+    t = Table(box=box.SIMPLE, show_header=True, header_style="bold dim",
+              pad_edge=False, show_edge=False)
+    t.add_column("  Severity", min_width=12, style="bold")
+    t.add_column("  Count",    min_width=7,  justify="right")
+    t.add_column("  SLA",      min_width=26, style="dim")
     for sev in SEV_ORDER:
         cnt = sev_counts.get(sev, 0)
         if cnt > 0:
-            col = SEV_COLORS.get(sev, "white")
-            t.add_row(
-                f"  [{col}]{sev}[/{col}]",
-                f"  [{col}]{cnt}[/{col}]",
-                f"  {SEV_SLA.get(sev, '')}",
-            )
-
+            col = SEV_COLOR.get(sev,"white")
+            t.add_row(f"  [{col}]{sev}[/{col}]",
+                      f"  [{col}]{cnt}[/{col}]",
+                      f"  {SEV_SLA.get(sev,'')}")
     t.add_section()
-    t.add_row("  [dim]Hosts[/dim]",
-              f"  [white]{len(host_id_map)}[/white]", "")
+    t.add_row("  [dim]Hosts[/dim]", f"  [white]{len(host_id_map)}[/white]", "")
     t.add_row("  [dim]Findings[/dim]",
               f"  [white]{len(triage_rows)}[/white]",
-              f"  [dim]{ai_count} AI-enhanced[/dim]")
-
+              "")
     console.print(t)
     console.print()
-    console.print(Rule("[dim]Outputs[/dim]", style="dim"))
-    console.print()
-    _ok(f"Report  →  [cyan]{excel_path}[/cyan]")
-    _ok(f"Log     →  [cyan]{log_path}[/cyan]")
-    console.print()
+    return True
 
 
-# ── Post-scan menu ────────────────────────────────────────────────────────────
-
-def _menu(excel_path: str, log_path: str) -> None:
-    console.print(Rule("[dim]Actions[/dim]", style="dim"))
-    console.print()
-    while True:
-        choice = questionary.select(
-            "  Select action:",
-            choices=[
-                f"Open Excel Report  ({excel_path})",
-                f"Open Scan Log      ({log_path})",
-                "Exit",
-            ],
-            style=Q,
-        ).ask()
-        if not choice or "Exit" in choice:
-            console.print()
-            _ok("Session complete.")
-            console.print()
-            break
-        elif "Report" in choice:
-            open_file(excel_path)
-            _i("Opening report...")
-        elif "Log" in choice:
-            open_file(log_path)
-            _i("Opening scan log...")
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-def main() -> None:
+def main() -> str:
     _banner()
 
-    # ── Target ──────────────────────────────────────────────────────────
+    # 1. Target
     target_input = questionary.text(
         "  tm> ? target:",
         validate=lambda v: True if v.strip() else "Target cannot be empty.",
         style=Q,
     ).ask()
     if not target_input:
-        return
+        return "exit"
     console.print()
 
-    # ── Authorization ────────────────────────────────────────────────────
-    gate = AuthorizationGate()
-    if not gate.validate(target_input.strip()):
-        _e("Scan aborted — authorization not confirmed.")
-        return
+    target = Target(target_input.strip())
+    dirs = ScanDirs.create(base="scans", target=target.domain)
+
+    # 2. Authorization
+    if not AuthorizationGate().validate(target_input.strip(), report_dir=dirs.report_dir):
+        _e("Scan aborted.")
+        return "exit"
     console.print()
 
-    # ── Mode ─────────────────────────────────────────────────────────────
+    # 3. Mode
     mode_raw = questionary.select(
-        "  tm> ? mode:",
+        "  tm> ? scan mode:",
         choices=[
             "balanced   — Recommended. Fast, focused, low noise.",
-            "aggressive — All 65,535 ports + full Nuclei templates. Loud.",
+            "aggressive — All 65,535 ports + full Nuclei. Loud.",
         ],
         style=Q,
     ).ask()
     if not mode_raw:
-        return
-
+        return "exit"
     mode = MODE_AGGRESSIVE if "aggressive" in mode_raw else MODE_BALANCED
-
     if mode == MODE_AGGRESSIVE:
         console.print()
         if not questionary.confirm(
-            "  Aggressive scans all 65,535 ports. Confirm authorization?",
+            "  Aggressive mode scans all 65,535 ports. Confirm?",
             default=False, style=Q,
         ).ask():
-            _w("Switching to balanced mode.")
-            mode = MODE_BALANCED
+            _w("Switching to balanced mode."); mode = MODE_BALANCED
     console.print()
 
-    # ── Subdomain sweep ───────────────────────────────────────────────────
+    # 4. Subdomain sweep
     full_scan = questionary.confirm(
-        "  tm> ? enumerate subdomains?",
-        default=False, style=Q,
+        "  tm> ? enumerate subdomains?", default=False, style=Q,
     ).ask()
     console.print()
 
-    # ── Output folder ─────────────────────────────────────────────────────
+    # 5. Output folder
     default_save = str(Path.home() / "ThreatMap-Reports")
-    save_dir_raw = questionary.text(
-        "  tm> ? save report to folder:",
+    save_raw = questionary.text(
+        "  tm> ? save reports to:",
         default=default_save,
         instruction="(press Enter for default)",
         style=Q,
     ).ask()
-    save_dir = (save_dir_raw or default_save).strip()
-
-    # Validate / create the folder
+    save_dir = (save_raw or default_save).strip()
     try:
         Path(save_dir).mkdir(parents=True, exist_ok=True)
-        _ok(f"Reports will be saved to: [cyan]{save_dir}[/cyan]")
+        _ok(f"Reports → [cyan]{save_dir}[/cyan]")
     except Exception as exc:
-        _w(f"Cannot create {save_dir}: {exc} — using default.")
+        _w(f"Cannot create directory ({exc}) — using default.")
         save_dir = default_save
         Path(save_dir).mkdir(parents=True, exist_ok=True)
     console.print()
 
-    # ── Setup ─────────────────────────────────────────────────────────────
-    ensure_env()
-    log_path = "reports/scan.log"
-    _configure_logging(log_path)
+    # 6. Setup
+    configure_logging(verbose=False, log_file=dirs.log_file)
+    log.info("scan started: target=%s mode=%s", target.domain, mode)
 
-    target      = Target(target_input.strip())
+    registry = ToolRegistry()
+    all_ok, missing = registry.validate()
+    if not all_ok:
+        registry.print_install_guide(missing)
+        if not questionary.confirm(
+            "  Some required tools are missing. Continue anyway?",
+            default=False, style=Q,
+        ).ask():
+            _e("Scan aborted.")
+            return "exit"
+        console.print()
+
     db          = DBManager()
     scan_id     = db.init_scan(target=target.domain, scan_mode=mode, max_workers=4)
-    parser      = ThreatMapParser(target.domain)
-    live_hosts  : list[str]      = []
-    host_id_map : dict[str, int] = {}
+    live_hosts  : list[str]     = []
+    host_id_map : dict[str,int] = {}
 
-    _scan_config(target.domain, mode, log_path, save_dir)
+    _i(f"Scanning [bold white]{target.domain}[/bold white]  "
+       f"[dim]({'Balanced' if mode==MODE_BALANCED else 'Aggressive'})[/dim]")
+    console.print()
 
-    # ── Progress ──────────────────────────────────────────────────────────
+    # 7. SCAN
     with Progress(
-        TextColumn("  [bold blue]  [*][/bold blue]  [progress.description]{task.description:<28}"),
+        TextColumn("  [bold blue][[*]][/bold blue]  "
+                   "[progress.description]{task.description:<28}"),
         SpinnerColumn(spinner_name="dots", style="red"),
         BarColumn(bar_width=22, complete_style="red", finished_style="green"),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        console=console,
-        transient=False,
+        TaskProgressColumn(), TimeElapsedColumn(),
+        console=console, transient=False,
     ) as progress:
 
-        # Phase 0 — Discovery
-        task_disc = progress.add_task("Discovery", total=3)
+        disc = progress.add_task("[Discovery] Target Expansion", total=3)
         if full_scan:
-            subs_sf = ScannerKit.run_subfinder(target)
-            progress.advance(task_disc)
-            subs_af = ScannerKit.run_assetfinder(target)
-            progress.advance(task_disc)
-            all_subs = list(set(subs_sf + subs_af))
-            if all_subs:
-                Path("reports/subdomains.txt").write_text("\n".join(all_subs))
-            live_hosts = ScannerKit.run_httpx()
-            progress.advance(task_disc)
-            if not live_hosts:
-                live_hosts = [target.url]
+            subs = ScannerKit.discover_subdomains(target, dirs)
+            progress.advance(disc); progress.advance(disc)
+            live_hosts = ScannerKit.filter_live_hosts(subs, dirs) or [target.url]
+            progress.advance(disc)
         else:
             live_hosts = [target.url]
-            progress.update(task_disc, completed=3)
+            progress.update(disc, completed=3)
 
-        # Phase 1 — Scanning
-        task_scan    = progress.add_task("Scanning", total=len(live_hosts))
+        task_scan    = progress.add_task("[Scanning] Host & Port Analysis", total=len(live_hosts))
         orchestrator = ParallelOrchestrator(mode=mode)
-        scan_results : dict[str, dict] = {}
+        scan_results : dict[str,dict] = {}
         lock = threading.Lock()
 
         def _scan_one(host: str) -> None:
-            result = orchestrator._scan_single_host(host)
-            with lock:
-                scan_results[host] = result
+            result = orchestrator.scan_host(host, dirs)
+            with lock: scan_results[host] = result
             progress.advance(task_scan)
 
-        threads = [threading.Thread(target=_scan_one, args=(h,), daemon=True)
-                   for h in live_hosts]
+        threads = [threading.Thread(target=_scan_one, args=(h,), daemon=True) for h in live_hosts]
         for t in threads: t.start()
         for t in threads: t.join()
 
-        # Phase 2 — Persist
-        task_db = progress.add_task("Saving Results", total=max(len(scan_results), 1))
+        task_db = progress.add_task("Saving results", total=max(len(scan_results),1))
         for host, result in scan_results.items():
-            if result.get("error"):
-                progress.advance(task_db)
-                continue
+            if result.get("error"): progress.advance(task_db); continue
             ht      = Target(host)
             host_id = db.upsert_host(scan_id, host, ht.domain)
             host_id_map[host] = host_id
-            if result.get("nmap"):
-                db.insert_ports(host_id, result["nmap"])
-            parser.parse_host_reports(host)
+            if result.get("nmap"): db.insert_ports(host_id, result["nmap"])
             progress.advance(task_db)
 
-        # Phase 3 — Evidence (HTTP probe only)
         http_hosts = [h for h in host_id_map if h.startswith("http")]
-        task_ev = progress.add_task("Evidence Collection", total=max(len(http_hosts), 1))
+        task_ev = progress.add_task("[Web Analysis] HTTP Evidence Collection", total=max(len(http_hosts),1))
         if http_hosts:
-            collector = EvidenceCollector(db=db, scan_id=scan_id)
-            collector.capture_screenshots(
-                hosts=http_hosts,
-                output_dir="reports",
-                host_id_map=host_id_map,
-            )
-        progress.update(task_ev, completed=max(len(http_hosts), 1))
+            EvidenceCollector().probe_hosts(hosts=http_hosts, output_dir=dirs.report_dir)
+        progress.update(task_ev, completed=max(len(http_hosts),1))
 
-        # Phase 4 — AI Triage
-        task_ai = progress.add_task("AI Triage", total=1)
-        import io, contextlib
+        task_ai = progress.add_task("[Vulnerability Analysis] Risk Classification", total=1)
         with contextlib.redirect_stderr(io.StringIO()):
-            run_ai_triage(db=db, scan_id=scan_id)
+            run_ai_triage(db=db, scan_id=scan_id, raw_dir=dirs.raw_dir, report_dir=dirs.report_dir)
         progress.advance(task_ai)
 
-        # Phase 5 — Report
-        task_rep = progress.add_task("Generating Report", total=1)
-        parser.save_and_cleanup()
         db.complete_scan(scan_id)
-        db.generate_evidence_report(scan_id, "reports/evidence_summary.html")
-        excel_path = generate_excel(db, output_dir=save_dir)
-        if not excel_path:
-            _w("No findings — check scan.log for details.")
-            return
+
+        task_rep = progress.add_task("[Report Generation] Building Output Files", total=1)
+        report_paths = generate_all_reports(db=db, scan_id=scan_id, output_dir=save_dir)
         progress.advance(task_rep)
 
-    triage_rows = db.get_all_triage()
-    _summary(triage_rows, host_id_map, excel_path, log_path)
-    _menu(excel_path, log_path)
+    # 8. Summary
+    triage_rows  = db.get_triage_by_scan(scan_id)
+    has_findings = _show_summary(triage_rows, host_id_map)
+
+    if not has_findings:
+        _i(f"Scan log → [cyan]{dirs.log_file}[/cyan]")
+        console.print()
+        return "exit"
+
+    console.print()
+
+    action = PostScanMenu(
+        report_paths=report_paths,
+        log_path=dirs.log_file,
+        output_dir=save_dir,
+    ).run()
+
+    return action
 
 
 if __name__ == "__main__":
     try:
-        main()
+        while True:
+            action = main()
+            if action != "continue":
+                break
+            console.print()
+        console.print("  [green][[✔]][/green]  Goodbye.")
     except KeyboardInterrupt:
         console.print()
-        _w("Interrupted.")
-        if os.path.exists("reports"):
-            shutil.rmtree("reports")
+        console.print("  [yellow][[!]][/yellow]  Interrupted.")
         sys.exit(0)

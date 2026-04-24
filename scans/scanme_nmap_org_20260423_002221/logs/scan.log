@@ -1,0 +1,93 @@
+00:22:21  INFO      threatmap.main  scan started: target=scanme.nmap.org mode=balanced
+00:22:21  DEBUG     threatmap.env  [env] nmap             found: /usr/bin/nmap
+00:22:21  DEBUG     threatmap.env  [env] nikto            found: /usr/bin/nikto
+00:22:21  DEBUG     threatmap.env  [env] gobuster         found: /usr/bin/gobuster
+00:22:21  DEBUG     threatmap.env  [env] sslscan          found: /usr/bin/sslscan
+00:22:21  DEBUG     threatmap.env  [env] whatweb          found: /usr/bin/whatweb
+00:22:21  DEBUG     threatmap.env  [env] curl             found: /usr/bin/curl
+00:22:21  DEBUG     threatmap.env  [env] whois            found: /usr/bin/whois
+00:22:21  DEBUG     threatmap.env  [env] dig              found: /usr/bin/dig
+00:22:21  DEBUG     threatmap.env  [env] subfinder        found: /home/nitin/go/bin/subfinder
+00:22:21  DEBUG     threatmap.env  [env] httpx            found: /home/nitin/go/bin/httpx
+00:22:21  DEBUG     threatmap.env  [env] assetfinder      found: /home/nitin/go/bin/assetfinder
+00:22:21  DEBUG     threatmap.env  [env] nuclei           found: /home/nitin/go/bin/nuclei
+00:22:21  DEBUG     threatmap.env  [env] wafw00f          found: /usr/bin/wafw00f
+00:22:21  INFO      threatmap.env  [env] all required tools present
+00:22:21  DEBUG     threatmap.runner  [subfinder] cmd: /home/nitin/go/bin/subfinder -d scanme.nmap.org -silent -o scans/scanme_nmap_org_20260423_002221/raw/subdomains.txt
+00:23:22  DEBUG     threatmap.runner  [subfinder] done in 61.0s
+00:23:22  DEBUG     threatmap.runner  [assetfinder] cmd: /home/nitin/go/bin/assetfinder --subs-only scanme.nmap.org
+00:23:34  DEBUG     threatmap.runner  [assetfinder] done in 12.2s
+00:23:34  INFO      threatmap.scanner  [discovery] 1 unique subdomains found
+00:23:34  DEBUG     threatmap.runner  [httpx] cmd: /home/nitin/go/bin/httpx -l scans/scanme_nmap_org_20260423_002221/raw/subdomains_all.txt -silent -o scans/scanme_nmap_org_20260423_002221/raw/live_hosts.txt
+00:23:38  DEBUG     threatmap.runner  [httpx] done in 3.9s
+00:23:38  INFO      threatmap.scanner  [discovery] 1 live hosts after httpx
+00:23:38  INFO      threatmap.scanner  [orchestrator] mode=balanced workers=4
+00:23:38  INFO      threatmap.scanner  ━━━ scanning: http://scanme.nmap.org [balanced] ━━━
+00:23:38  INFO      threatmap.runner  [pipeline:scanme.nmap.org] starting 7 steps
+00:23:38  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → whois
+00:23:38  DEBUG     threatmap.runner  [whois] cmd: /usr/bin/whois scanme.nmap.org
+00:23:38  DEBUG     threatmap.runner  [whois] done in 0.7s
+00:23:38  INFO      threatmap.runner  [pipeline:scanme.nmap.org] whois OK (0.7s)
+00:23:38  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → dig
+00:23:38  DEBUG     threatmap.runner  [dig:A] cmd: /usr/bin/dig scanme.nmap.org A +short
+00:23:38  DEBUG     threatmap.runner  [dig:A] done in 0.0s
+00:23:38  DEBUG     threatmap.runner  [dig:AAAA] cmd: /usr/bin/dig scanme.nmap.org AAAA +short
+00:23:38  DEBUG     threatmap.runner  [dig:AAAA] done in 0.0s
+00:23:38  DEBUG     threatmap.runner  [dig:MX] cmd: /usr/bin/dig scanme.nmap.org MX +short
+00:23:39  DEBUG     threatmap.runner  [dig:MX] done in 0.0s
+00:23:39  DEBUG     threatmap.runner  [dig:NS] cmd: /usr/bin/dig scanme.nmap.org NS +short
+00:23:39  DEBUG     threatmap.runner  [dig:NS] done in 0.0s
+00:23:39  DEBUG     threatmap.runner  [dig:TXT] cmd: /usr/bin/dig scanme.nmap.org TXT +short
+00:23:39  DEBUG     threatmap.runner  [dig:TXT] done in 0.0s
+00:23:39  DEBUG     threatmap.runner  [dig:SOA] cmd: /usr/bin/dig scanme.nmap.org SOA +short
+00:23:39  DEBUG     threatmap.runner  [dig:SOA] done in 0.0s
+00:23:39  INFO      threatmap.runner  [pipeline:scanme.nmap.org] dig OK (0.0s)
+00:23:39  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → whatweb
+00:23:40  DEBUG     threatmap.runner  [whatweb] cmd: /usr/bin/whatweb -v --user-agent Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 --log-json=scans/scanme_nmap_org_20260423_002221/raw/whatweb_scanme.nmap.org.json https://scanme.nmap.org
+00:23:44  DEBUG     threatmap.runner  [whatweb] done in 4.0s
+00:23:44  INFO      threatmap.runner  [pipeline:scanme.nmap.org] whatweb OK (4.0s)
+00:23:44  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → wafw00f
+00:23:45  DEBUG     threatmap.runner  [wafw00f] cmd: /usr/bin/wafw00f -a https://scanme.nmap.org
+00:23:46  DEBUG     threatmap.runner  [wafw00f] done in 0.6s
+00:23:46  INFO      threatmap.runner  [pipeline:scanme.nmap.org] wafw00f OK (0.6s)
+00:23:46  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → nmap
+00:23:47  DEBUG     threatmap.runner  [nmap] cmd: nmap -sV -sC -Pn --top-ports 1000 -T4 --max-retries 1 -oX scans/scanme_nmap_org_20260423_002221/raw/nmap_scanme.nmap.org.xml scanme.nmap.org
+00:24:17  DEBUG     threatmap.runner  [nmap] done in 30.3s
+00:24:17  DEBUG     threatmap.scanner  [nmap:parse] 3 open ports from scans/scanme_nmap_org_20260423_002221/raw/nmap_scanme.nmap.org.xml
+00:24:17  INFO      threatmap.runner  [pipeline:scanme.nmap.org] nmap OK (30.3s)
+00:24:17  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → web_tools
+00:24:17  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] starting 3 steps
+00:24:17  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] → nikto
+00:24:18  DEBUG     threatmap.runner  [nikto] cmd: nikto -h https://scanme.nmap.org -useragent Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 -output scans/scanme_nmap_org_20260423_002221/raw/nikto_scanme.nmap.org.txt -maxtime 3m -nointeractive
+00:24:20  DEBUG     threatmap.runner  [nikto] done in 2.2s
+00:24:20  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] nikto OK (2.2s)
+00:24:20  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] → curl
+00:24:20  DEBUG     threatmap.runner  [curl] cmd: curl -s -I -L --max-redirs 5 -A Mozilla/5.0 (Windows NT 10.0; rv:125.0) Gecko/20100101 Firefox/125.0 --connect-timeout 8 --max-time 15 https://scanme.nmap.org
+00:24:20  WARNING   threatmap.runner  [curl] exited 7 in 0.3s
+00:24:20  WARNING   threatmap.runner  [pipeline:scanme.nmap.org:web] curl failed — continuing
+00:24:20  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] → gobuster
+00:24:21  DEBUG     threatmap.runner  [gobuster] cmd: gobuster dir -u https://scanme.nmap.org -w /usr/share/seclists/Discovery/Web-Content/common.txt -a Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 -o scans/scanme_nmap_org_20260423_002221/raw/gobuster_scanme.nmap.org.txt -b 404,301,302 -t 50 --timeout 8s -q
+00:24:22  WARNING   threatmap.runner  [gobuster] exited 1 in 0.4s
+00:24:22  WARNING   threatmap.runner  [pipeline:scanme.nmap.org:web] gobuster failed — continuing
+00:24:22  INFO      threatmap.runner  [pipeline:scanme.nmap.org:web] done — ok:1 failed:2 timeout:0
+00:24:22  INFO      threatmap.runner  [pipeline:scanme.nmap.org] web_tools OK (0.0s)
+00:24:22  INFO      threatmap.runner  [pipeline:scanme.nmap.org] → nuclei
+00:24:22  DEBUG     threatmap.runner  [nuclei] cmd: /home/nitin/go/bin/nuclei -u https://scanme.nmap.org -o scans/scanme_nmap_org_20260423_002221/raw/nuclei_scanme.nmap.org.txt -silent -severity critical,high,medium -tags cve,exposure,misconfig,default-login,takeover -timeout 8 -rate-limit 80 -bulk-size 20 -c 20
+00:24:28  DEBUG     threatmap.runner  [nuclei] done in 5.8s
+00:24:28  INFO      threatmap.runner  [pipeline:scanme.nmap.org] nuclei OK (5.8s)
+00:24:28  INFO      threatmap.runner  [pipeline:scanme.nmap.org] done — ok:7 failed:0 timeout:0
+00:24:28  INFO      threatmap.scanner  ━━━ done: http://scanme.nmap.org  ports=['22', '80', '9929'] ━━━
+00:24:28  INFO      threatmap.evidence  [Evidence] HTTP probed 1/1 hosts successfully
+00:24:28  WARNING   threatmap.triage  [SLM] llama-cpp-python not installed. pip install llama-cpp-python huggingface_hub
+00:24:28  INFO      threatmap.triage  [Triage] Provider: none
+00:24:28  INFO      threatmap.triage  [Medium] http://scanme.nmap.org:22 (tcpwrapped) -> Unnecessary Network Service Exposed
+00:24:28  INFO      threatmap.triage  [Medium] http://scanme.nmap.org:80 (tcpwrapped) -> Unnecessary Network Service Exposed
+00:24:28  INFO      threatmap.triage  [Info] http://scanme.nmap.org:9929 (tcpwrapped) -> Unnecessary Network Service Exposed
+00:24:28  INFO      threatmap.triage  [Triage] 3 finding(s) via none
+00:24:28  INFO      threatmap.reporter  [reporter] RAM too low for SLM (2.3GB available < 3.0GB) — using templates
+00:24:28  INFO      threatmap.reporter  [reporter] provider: none
+00:24:28  INFO      threatmap.reporter  [reporter] building report for scan 1
+00:24:28  INFO      threatmap.reporter  [reporter] JSON → /home/nitin/ThreatMap-Reports/ThreatMap_scanme_nmap_org_20260423_0024.json
+00:24:28  INFO      threatmap.reporter  [reporter] TXT → /home/nitin/ThreatMap-Reports/ThreatMap_scanme_nmap_org_20260423_0024.txt
+00:24:28  INFO      threatmap.reporter  [reporter] HTML → /home/nitin/ThreatMap-Reports/ThreatMap_scanme_nmap_org_20260423_0024.html
+00:24:28  INFO      threatmap.reporter  [reporter] all reports written to /home/nitin/ThreatMap-Reports

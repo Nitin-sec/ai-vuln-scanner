@@ -1,0 +1,4 @@
+- Nikto v2.6.0/
++ Target Host: scanme.nmap.org
++ Target Port: 443
++ GET Unable to connect to scanme.nmap.org:443.

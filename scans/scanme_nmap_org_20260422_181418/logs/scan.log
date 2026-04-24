@@ -1,0 +1,14 @@
+18:14:18  DEBUG     threatmap.env  [env] nmap             found: /usr/bin/nmap
+18:14:18  DEBUG     threatmap.env  [env] nikto            found: /usr/bin/nikto
+18:14:18  DEBUG     threatmap.env  [env] gobuster         found: /usr/bin/gobuster
+18:14:18  DEBUG     threatmap.env  [env] sslscan          found: /usr/bin/sslscan
+18:14:18  DEBUG     threatmap.env  [env] whatweb          found: /usr/bin/whatweb
+18:14:18  DEBUG     threatmap.env  [env] curl             found: /usr/bin/curl
+18:14:18  DEBUG     threatmap.env  [env] whois            found: /usr/bin/whois
+18:14:18  DEBUG     threatmap.env  [env] dig              found: /usr/bin/dig
+18:14:18  DEBUG     threatmap.env  [env] subfinder        found: /home/nitin/go/bin/subfinder
+18:14:18  DEBUG     threatmap.env  [env] httpx            found: /home/nitin/go/bin/httpx
+18:14:18  DEBUG     threatmap.env  [env] assetfinder      found: /home/nitin/go/bin/assetfinder
+18:14:18  DEBUG     threatmap.env  [env] nuclei           found: /home/nitin/go/bin/nuclei
+18:14:18  DEBUG     threatmap.env  [env] wafw00f          found: /usr/bin/wafw00f
+18:14:18  INFO      threatmap.env  [env] all required tools present

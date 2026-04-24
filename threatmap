@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+    VENV_ACTIVATE="$SCRIPT_DIR/venv/Scripts/activate"
+else
+    VENV_ACTIVATE="$SCRIPT_DIR/venv/bin/activate"
+fi
+
+if [ ! -f "$VENV_ACTIVATE" ]; then
+    echo "[!] Virtual environment not found."
+    read -r -p "  Run ./install.sh now? [Y/n] " answer
+    answer="${answer:-Y}"
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        ./install.sh
+    else
+        echo "Aborted."
+        exit 1
+    fi
+fi
+
+# shellcheck source=/dev/null
+. "$VENV_ACTIVATE"
+exec python main.py "$@"

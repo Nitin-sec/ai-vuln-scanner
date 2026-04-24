@@ -1,536 +1,628 @@
 """
-scanner_core.py — ThreatMap Infra full scanner suite.
+scanner_core.py — ThreatMap Infra Scanner
 
-Speed design
-------------
-Evasion delays exist to avoid tripping IDS/WAF on production targets.
-But they were wildly over-tuned — 5–10s per tool call stacks to 7+ minutes
-on a simple scan. Revised delays:
+Uses:
+  scan_runner.py  — safe subprocess execution with timeout + kill
+  env_check.py    — tool path cache + validation
+  scan_logger.py  — centralized logging
 
-  Balanced   : 0.5–1.5s between tool launches (reasonable, not sluggish)
-  Aggressive : 0.1–0.5s (you explicitly chose loud — minimal throttling)
-
-Web tools (nikto, gobuster, curl, sslscan) run in parallel threads per host,
-so their delays don't stack sequentially.
-
-The random User-Agent and inter-tool pauses are preserved — just sane.
+Key fixes:
+  - nmap args are now separate list items (was single string — caused silent no-findings)
+  - every tool call goes through run_tool(), never subprocess.run() directly
+  - pipeline never crashes; failed tools are logged and skipped
 """
 
-import logging
-import os
-import shutil
-import subprocess
-import xml.etree.ElementTree as ET
 import json
 import random
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Optional
 
-logger = logging.getLogger("threatmap.scanner")
+from env_check  import ToolRegistry, ScanDirs
+from scan_runner import run_tool, ToolResult, ToolStatus, ExecutionPipeline
+from scan_logger import get_logger
+
+log = get_logger("scanner")
+
+# Shared registry — populated once per process, reused across all scans
+_registry = ToolRegistry()
 
 MODE_BALANCED   = "balanced"
 MODE_AGGRESSIVE = "aggressive"
 
-# ---------------------------------------------------------------------------
-# Target
-# ---------------------------------------------------------------------------
-
-class Target:
-    def __init__(self, raw_input: str):
-        self.raw    = raw_input.strip()
-        clean       = self.raw.replace("https://", "").replace("http://", "")
-        self.domain = clean.split("/")[0].split("?")[0]
-        self.url    = f"https://{self.domain}"
-
-
-# ---------------------------------------------------------------------------
-# Tool resolver
-# ---------------------------------------------------------------------------
-
-class ToolResolver:
-    @staticmethod
-    def get(name: str, validate_args: list | None = None,
-            expected: str | None = None) -> str | None:
-        override = os.environ.get(f"{name.upper().replace('-','_')}_PATH")
-        if override and os.path.isfile(override):
-            return override
-        path = shutil.which(name)
-        if not path:
-            return None
-        if validate_args and expected:
-            try:
-                res = subprocess.run([path] + validate_args, capture_output=True,
-                                     text=True, timeout=6)
-                if expected.lower() not in (res.stdout + res.stderr).lower():
-                    return None
-            except Exception:
-                return None
-        return path
-
-
-# ---------------------------------------------------------------------------
-# Evasion helpers — sane delays
-# ---------------------------------------------------------------------------
-
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; rv:125.0) Gecko/20100101 Firefox/125.0",
 ]
 
-def _random_ua() -> str:
+
+def _ua() -> str:
     return random.choice(USER_AGENTS)
 
 def _delay(mode: str) -> None:
+    time.sleep(random.uniform(0.5, 1.5) if mode == MODE_BALANCED
+               else random.uniform(0.1, 0.5))
+
+def _tool(name: str) -> Optional[str]:
+    return _registry.get(name)
+
+
+def _failure_message(tool: str, status: ToolStatus, error: str) -> str:
+    reason = "execution error"
+    if status == ToolStatus.TIMEOUT:
+        reason = "timed out"
+    elif status == ToolStatus.SKIPPED:
+        reason = "not available in environment"
+    elif error:
+        reason = error
+
+    impact = "this scan area may have reduced coverage"
+    if tool in {"nmap"}:
+        impact = "port and service visibility may be incomplete"
+    elif tool in {"nuclei", "nikto", "gobuster", "whatweb", "wafw00f"}:
+        impact = "web vulnerability visibility may be partial"
+    elif tool in {"whois", "dig", "subfinder", "assetfinder", "httpx"}:
+        impact = "discovery scope may be reduced"
+    return f"{tool} failed ({reason}); {impact}"
+
+
+# ── Target ────────────────────────────────────────────────────────────────────
+
+class Target:
+    def __init__(self, raw: str) -> None:
+        self.raw    = raw.strip()
+        clean       = self.raw.replace("https://","").replace("http://","")
+        self.domain = clean.split("/")[0].split("?")[0]
+        self.url    = f"https://{self.domain}"
+
+    def __repr__(self) -> str:
+        return f"Target({self.domain})"
+
+
+# ── Environment check ─────────────────────────────────────────────────────────
+
+def validate_environment() -> tuple[bool, list]:
     """
-    Balanced  : 0.5–1.5s   — polite but not painful
-    Aggressive: 0.1–0.5s   — minimal; user explicitly chose loud
-    No delay at all for OSINT tools (whois, dig, nslookup) — they're read-only
+    Run before any scan. Returns (all_required_ok, missing_tools).
+    Caller (main.py) decides whether to abort or warn.
     """
+    return _registry.validate()
+
+
+# ── Individual tool wrappers ──────────────────────────────────────────────────
+# Each returns ToolResult. Never raises.
+
+def run_subfinder(target: Target, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("subfinder")
+    if not bin_path:
+        return ToolResult(tool="subfinder", status=ToolStatus.SKIPPED,
+                          error="not installed")
+    out = dirs.raw_file("subdomains.txt")
+    result = run_tool("subfinder",
+                    [bin_path, "-d", target.domain, "-silent", "-o", out],
+                    timeout=120)
+
+    # Save raw output to evidence
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "subdomains.txt").write_text(content)
+
+    return result
+
+
+def run_assetfinder(target: Target, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("assetfinder")
+    if not bin_path:
+        return ToolResult(tool="assetfinder", status=ToolStatus.SKIPPED,
+                          error="not installed")
+    result = run_tool("assetfinder",
+                      [bin_path, "--subs-only", target.domain],
+                      timeout=60)
+    if result.ok and result.stdout:
+        out = dirs.raw_file("subdomains_af.txt")
+        Path(out).write_text(result.stdout)
+
+    # Save raw output to evidence
+    if result.ok and result.stdout:
+        Path(dirs.evidence / "subdomains_af.txt").write_text(result.stdout)
+
+    return result
+
+
+def run_httpx(subs_file: str, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("httpx")
+    if not bin_path or not Path(subs_file).exists():
+        return ToolResult(tool="httpx", status=ToolStatus.SKIPPED,
+                          error="not installed or no subs file")
+    out = dirs.raw_file("live_hosts.txt")
+    return run_tool("httpx",
+                    [bin_path, "-l", subs_file, "-silent", "-o", out],
+                    timeout=120)
+
+
+def run_whois(target: Target, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("whois")
+    if not bin_path:
+        return ToolResult(tool="whois", status=ToolStatus.SKIPPED, error="not installed")
+    result = run_tool("whois", [bin_path, target.domain],
+                    timeout=20,
+                    output_file=dirs.raw_file(f"whois_{target.domain}.txt"))
+
+    # Save raw output to evidence
+    out = dirs.raw_file(f"whois_{target.domain}.txt")
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "whois.txt").write_text(content)
+
+    return result
+
+
+def run_dig(target: Target, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("dig")
+    if not bin_path:
+        return ToolResult(tool="dig", status=ToolStatus.SKIPPED, error="not installed")
+
+    out_path = dirs.raw_file(f"dig_{target.domain}.txt")
+    combined = []
+    for rtype in ["A", "AAAA", "MX", "NS", "TXT", "SOA"]:
+        r = run_tool(f"dig:{rtype}",
+                     [bin_path, target.domain, rtype, "+short"],
+                     timeout=10)
+        combined.append(f"\n=== {rtype} ===\n{r.stdout or '(none)'}")
+    Path(out_path).write_text("\n".join(combined))
+    result = ToolResult(tool="dig", status=ToolStatus.SUCCESS,
+                      stdout="\n".join(combined))
+
+    # Save raw output to evidence
+    if result.ok and result.stdout:
+        Path(dirs.evidence / "dig.txt").write_text(result.stdout)
+
+    return result
+
+
+def run_nmap(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    """
+    FIXED: every flag is a separate list element.
+    Was: ["-T4 --top-ports 100"]  ← nmap ignored the whole thing
+    Now: ["-T4", "--top-ports", "1000"]  ← correct
+    """
+    _delay(mode)
+    out = dirs.raw_file(f"nmap_{target.domain}.xml")
+
     if mode == MODE_AGGRESSIVE:
-        time.sleep(random.uniform(0.1, 0.5))
+        cmd = [
+            "nmap", "-sV", "-sC", "-A", "-Pn", "-p-",
+            "--min-rate", "2000", "--max-retries", "1",
+            "-T4", "-oX", out, target.domain,
+        ]
+        fallback_cmd = [
+            "nmap", "-sV", "-sC", "-Pn",
+            "--top-ports", "5000",
+            "-T4", "-oX", out, target.domain,
+        ]
+        timeout = 900
     else:
-        time.sleep(random.uniform(0.5, 1.5))
+        cmd = [
+            "nmap", "-sV", "-sC", "-Pn",
+            "--top-ports", "1000",
+            "-T4", "--max-retries", "1",
+            "-oX", out, target.domain,
+        ]
+        fallback_cmd = [
+            "nmap", "-Pn",
+            "--top-ports", "200",
+            "-T3", "-oX", out, target.domain,
+        ]
+        timeout = 300
+
+    result = run_tool("nmap", cmd, timeout=timeout)
+
+    if result.status == ToolStatus.TIMEOUT:
+        log.warning("[nmap] primary timed out, running fallback")
+        result = run_tool("nmap:fallback", fallback_cmd, timeout=timeout // 2)
+
+    # Save raw output to evidence
+    if result.ok and result.stdout:
+        Path(dirs.evidence / "nmap.txt").write_text(result.stdout)
+
+    return result
 
 
-# ---------------------------------------------------------------------------
-# ScannerKit
-# ---------------------------------------------------------------------------
+def run_whatweb(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    _delay(mode)
+    bin_path = _tool("whatweb")
+    if not bin_path:
+        return ToolResult(tool="whatweb", status=ToolStatus.SKIPPED, error="not installed")
+    out = dirs.raw_file(f"whatweb_{target.domain}.json")
+    result = run_tool("whatweb",
+                    [bin_path, "-v", "--user-agent", _ua(),
+                     f"--log-json={out}", target.url],
+                    timeout=60)
 
-class ScannerKit:
+    # Save raw output to evidence
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "whatweb.json").write_text(content)
 
-    # ── Subdomain discovery ────────────────────────────────────────────
-
-    @staticmethod
-    def run_subfinder(target: Target) -> list[str]:
-        logger.info("[subfinder] Starting on %s", target.domain)
-        bin_path = ToolResolver.get("subfinder", ["-version"], "subfinder")
-        if not bin_path:
-            return []
-        try:
-            subprocess.run(
-                [bin_path, "-d", target.domain, "-silent",
-                 "-o", "reports/subdomains.txt"],
-                stderr=subprocess.DEVNULL, timeout=120,
-            )
-            subs = [s.strip() for s in
-                    Path("reports/subdomains.txt").read_text().splitlines()
-                    if s.strip()]
-            logger.info("[subfinder] Found %d subdomains", len(subs))
-            return subs
-        except Exception as exc:
-            logger.warning("[subfinder] Failed: %s", exc)
-            return []
-
-    @staticmethod
-    def run_assetfinder(target: Target) -> list[str]:
-        logger.info("[assetfinder] Starting on %s", target.domain)
-        bin_path = ToolResolver.get("assetfinder")
-        if not bin_path:
-            logger.info("[assetfinder] Not installed — skipping")
-            return []
-        try:
-            result = subprocess.run(
-                [bin_path, "--subs-only", target.domain],
-                capture_output=True, text=True, timeout=60,
-            )
-            subs = [l.strip() for l in result.stdout.splitlines()
-                    if l.strip() and target.domain in l]
-            logger.info("[assetfinder] Found %d subdomains", len(subs))
-            return subs
-        except Exception as exc:
-            logger.warning("[assetfinder] Failed: %s", exc)
-            return []
-
-    @staticmethod
-    def run_httpx(subs_file: str = "reports/subdomains.txt") -> list[str]:
-        logger.info("[httpx] Filtering live hosts...")
-        bin_path = ToolResolver.get("httpx", ["-version"], "httpx")
-        if not bin_path or not Path(subs_file).exists():
-            return []
-        try:
-            subprocess.run(
-                [bin_path, "-l", subs_file, "-silent",
-                 "-o", "reports/live_hosts.txt"],
-                stderr=subprocess.DEVNULL, timeout=120,
-            )
-            hosts = [l.strip() for l in
-                     Path("reports/live_hosts.txt").read_text().splitlines()
-                     if l.strip()]
-            logger.info("[httpx] %d live hosts", len(hosts))
-            return hosts
-        except Exception as exc:
-            logger.warning("[httpx] Failed: %s", exc)
-            return []
-
-    # ── OSINT / DNS — no delays needed (read-only, no scanning) ───────
-
-    @staticmethod
-    def run_whois(target: Target) -> None:
-        logger.info("[whois] WHOIS lookup for %s", target.domain)
-        out = f"reports/whois_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                subprocess.run(["whois", target.domain],
-                               stdout=f, stderr=subprocess.DEVNULL, timeout=20)
-            logger.info("[whois] Done.")
-        except Exception as exc:
-            logger.warning("[whois] %s", exc)
-
-    @staticmethod
-    def run_dig(target: Target) -> None:
-        logger.info("[dig] DNS enumeration for %s", target.domain)
-        out = f"reports/dig_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                for rtype in ["A", "AAAA", "MX", "NS", "TXT", "SOA"]:
-                    f.write(f"\n=== {rtype} ===\n")
-                    r = subprocess.run(["dig", target.domain, rtype, "+short"],
-                                       capture_output=True, text=True, timeout=10)
-                    f.write(r.stdout or "(none)\n")
-            logger.info("[dig] DNS records captured (A, AAAA, MX, NS, TXT, SOA)")
-        except Exception as exc:
-            logger.warning("[dig] %s", exc)
-
-    @staticmethod
-    def run_nslookup(target: Target) -> None:
-        logger.info("[nslookup] NS lookup for %s", target.domain)
-        out = f"reports/nslookup_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                r = subprocess.run(["nslookup", target.domain],
-                                   capture_output=True, text=True, timeout=10)
-                f.write(r.stdout)
-            logger.info("[nslookup] Complete.")
-        except Exception as exc:
-            logger.warning("[nslookup] %s", exc)
-
-    # ── Port scanning ──────────────────────────────────────────────────
-
-    @staticmethod
-    def run_nmap(target: Target, mode: str = MODE_BALANCED) -> list[dict]:
-        _delay(mode)
-        logger.info("[nmap] Scanning %s (mode: %s)", target.domain, mode)
-        out = f"reports/nmap_{target.domain}.xml"
-
-        if mode == MODE_AGGRESSIVE:
-            cmd = ["nmap", "-sV", "-sC", "-A", "-Pn", "-p-",
-                   "--min-rate", "2000", "--max-retries", "1",
-                   "-T4", "-oX", out, target.domain]
-            fallback = ["nmap", "-sV", "-sC", "-Pn", "--top-ports", "5000",
-                        "-T4", "-oX", out, target.domain]
-            timeout = 900
-        else:
-            cmd = ["nmap", "-sV", "-sC", "-Pn", "--top-ports", "1000",
-                   "-T4", "--max-retries", "1", "-oX", out, target.domain]
-            fallback = ["nmap", "-sS", "-Pn", "--top-ports", "200",
-                        "-T3", "-oX", out, target.domain]
-            timeout = 300
-
-        for attempt, c in enumerate([cmd, fallback], 1):
-            try:
-                subprocess.run(c, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=timeout)
-                break
-            except subprocess.TimeoutExpired:
-                if attempt == 1:
-                    logger.warning("[nmap] Primary timed out, running fallback...")
-
-        results = []
-        try:
-            tree = ET.parse(out)
-            for port in tree.getroot().findall(".//port"):
-                state = port.find("state")
-                if state is None or state.get("state") != "open":
-                    continue
-                svc   = port.find("service")
-                ver_parts = [
-                    svc.get(a, "") for a in ["product", "version", "extrainfo"]
-                    if svc is not None and svc.get(a)
-                ]
-                results.append({
-                    "port":     port.get("portid"),
-                    "protocol": port.get("protocol", "tcp"),
-                    "state":    "open",
-                    "service":  svc.get("name", "unknown") if svc is not None else "unknown",
-                    "version":  " ".join(ver_parts),
-                    "cpe":      [c.text for c in port.findall(".//cpe") if c.text],
-                })
-        except Exception as exc:
-            logger.warning("[nmap] XML parse error: %s", exc)
-
-        logger.info("[nmap] Open ports: %s",
-                    [r["port"] for r in results] or "none/filtered")
-        return results
-
-    # ── Technology & WAF ──────────────────────────────────────────────
-
-    @staticmethod
-    def run_whatweb(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[whatweb] Fingerprinting %s", target.url)
-        out = f"reports/whatweb_{target.domain}.json"
-        try:
-            subprocess.run(
-                ["whatweb", "-v", "--user-agent", _random_ua(),
-                 f"--log-json={out}", target.url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-            )
-            try:
-                data = json.loads(Path(out).read_text())
-                tech = list(set(
-                    p for e in data if "plugins" in e
-                    for p in e["plugins"].keys()
-                ))
-                logger.info("[whatweb] Technologies: %s",
-                            ", ".join(tech[:6]) or "none detected")
-            except Exception:
-                pass
-        except Exception as exc:
-            logger.warning("[whatweb] %s", exc)
-
-    @staticmethod
-    def run_wafw00f(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[wafw00f] WAF check on %s", target.url)
-        bin_path = ToolResolver.get("wafw00f") or ToolResolver.get("wafwoof")
-        if not bin_path:
-            logger.info("[wafw00f] Not installed — skipping (pip install wafw00f)")
-            return
-        out = f"reports/wafw00f_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                subprocess.run([bin_path, "-a", target.url],
-                               stdout=f, stderr=subprocess.DEVNULL, timeout=30)
-            content = Path(out).read_text()
-            if any(k in content.lower() for k in ["is behind", "detected"]):
-                logger.info("[wafw00f] WAF DETECTED — see %s", out)
-            else:
-                logger.info("[wafw00f] No WAF detected.")
-        except Exception as exc:
-            logger.warning("[wafw00f] %s", exc)
-
-    # ── Web vulnerability tools ────────────────────────────────────────
-
-    @staticmethod
-    def run_nikto(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[nikto] Web scan on %s", target.url)
-        out     = f"reports/nikto_{target.domain}.txt"
-        maxtime = "5m" if mode == MODE_AGGRESSIVE else "3m"
-        try:
-            subprocess.run(
-                ["nikto", "-h", target.url, "-useragent", _random_ua(),
-                 "-output", out, "-maxtime", maxtime, "-nointeractive"],
-                stdout=subprocess.DEVNULL, timeout=360,
-            )
-            logger.info("[nikto] Web scan complete.")
-        except subprocess.TimeoutExpired:
-            logger.warning("[nikto] Timed out (partial results kept).")
-        except Exception as exc:
-            logger.warning("[nikto] %s", exc)
-
-    @staticmethod
-    def run_gobuster(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[gobuster] Directory enumeration on %s", target.url)
-        out = f"reports/gobuster_{target.domain}.txt"
-
-        wordlists = (
-            [
-                "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
-                "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt",
-                "/usr/share/wordlists/dirb/big.txt",
-            ]
-            if mode == MODE_AGGRESSIVE else
-            [
-                "/usr/share/seclists/Discovery/Web-Content/common.txt",
-                "/usr/share/wordlists/dirb/common.txt",
-                "/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt",
-            ]
-        )
-        wordlist = next((w for w in wordlists if Path(w).exists()), None)
-        if not wordlist:
-            logger.warning("[gobuster] No wordlist found — skipping "
-                           "(apt install seclists)")
-            return
-
-        threads = "80" if mode == MODE_AGGRESSIVE else "50"
-        try:
-            subprocess.run(
-                ["gobuster", "dir", "-u", target.url, "-w", wordlist,
-                 "-a", _random_ua(), "-o", out,
-                 "-b", "404,301,302", "-t", threads,
-                 "--timeout", "8s", "-q"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=300,
-            )
-            try:
-                count = len([l for l in Path(out).read_text().splitlines() if l])
-                logger.info("[gobuster] Found %d paths.", count)
-            except FileNotFoundError:
-                pass
-        except Exception as exc:
-            logger.warning("[gobuster] %s", exc)
-
-    @staticmethod
-    def run_sslscan(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[sslscan] TLS analysis on %s", target.domain)
-        out = f"reports/sslscan_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                subprocess.run(["sslscan", "--no-colour", target.domain],
-                               stdout=f, stderr=subprocess.DEVNULL, timeout=60)
-            logger.info("[sslscan] TLS data captured.")
-        except subprocess.TimeoutExpired:
-            logger.warning("[sslscan] Timed out.")
-        except Exception as exc:
-            logger.warning("[sslscan] %s", exc)
-
-    @staticmethod
-    def run_curl_recon(target: Target, mode: str = MODE_BALANCED) -> None:
-        _delay(mode)
-        logger.info("[curl] HTTP headers on %s", target.url)
-        out = f"reports/curl_headers_{target.domain}.txt"
-        try:
-            with open(out, "w") as f:
-                subprocess.run(
-                    ["curl", "-s", "-I", "-L", "--max-redirs", "5",
-                     "-A", _random_ua(), "--connect-timeout", "8",
-                     "--max-time", "15", target.url],
-                    stdout=f, stderr=subprocess.DEVNULL, timeout=20,
-                )
-            logger.info("[curl] HTTP headers captured.")
-        except Exception as exc:
-            logger.warning("[curl] %s", exc)
-
-    @staticmethod
-    def run_nuclei(target: Target, mode: str = MODE_BALANCED) -> None:
-        logger.info("[nuclei] Template scan on %s (mode: %s)", target.url, mode)
-        bin_path = ToolResolver.get("nuclei", ["-version"], "nuclei")
-        if not bin_path:
-            logger.info("[nuclei] Not installed — skipping "
-                        "(go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest)")
-            return
-        out = f"reports/nuclei_{target.domain}.txt"
-        if mode == MODE_AGGRESSIVE:
-            cmd = [bin_path, "-u", target.url, "-o", out, "-silent",
-                   "-timeout", "10", "-rate-limit", "150",
-                   "-bulk-size", "30", "-c", "30"]
-            timeout = 900
-        else:
-            # Balanced — critical/high/medium only, fast tags
-            cmd = [bin_path, "-u", target.url, "-o", out, "-silent",
-                   "-severity", "critical,high,medium",
-                   "-tags", "cve,exposure,misconfig,default-login,takeover",
-                   "-timeout", "8", "-rate-limit", "80",
-                   "-bulk-size", "20", "-c", "20"]
-            timeout = 300
-        try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=timeout)
-            try:
-                findings = [l for l in Path(out).read_text().splitlines() if l.strip()]
-                logger.info("[nuclei] %d findings.", len(findings))
-            except FileNotFoundError:
-                logger.info("[nuclei] No findings.")
-        except subprocess.TimeoutExpired:
-            logger.warning("[nuclei] Timed out (partial results kept).")
-        except Exception as exc:
-            logger.warning("[nuclei] %s", exc)
+    return result
 
 
-# ---------------------------------------------------------------------------
-# ParallelOrchestrator
-# ---------------------------------------------------------------------------
+def run_wafw00f(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    _delay(mode)
+    bin_path = _tool("wafw00f")
+    if not bin_path:
+        return ToolResult(tool="wafw00f", status=ToolStatus.SKIPPED, error="not installed")
+    result = run_tool("wafw00f",
+                    [bin_path, "-a", target.url],
+                    timeout=30,
+                    output_file=dirs.raw_file(f"wafw00f_{target.domain}.txt"))
+
+    # Save raw output to evidence
+    out = dirs.raw_file(f"wafw00f_{target.domain}.txt")
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "wafw00f.txt").write_text(content)
+
+    return result
+
+
+def run_nikto(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    _delay(mode)
+    bin_path = _tool("nikto")
+    if not bin_path:
+        return ToolResult(tool="nikto", status=ToolStatus.SKIPPED, error="not installed")
+    maxtime = "5m" if mode == MODE_AGGRESSIVE else "3m"
+    out = dirs.raw_file(f"nikto_{target.domain}.txt")
+    result = run_tool("nikto",
+                    ["nikto", "-h", target.url,
+                     "-useragent", _ua(),
+                     "-output", out,
+                     "-maxtime", maxtime,
+                     "-nointeractive"],
+                    timeout=360)
+
+    # Save raw output to evidence
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "nikto.txt").write_text(content)
+
+    return result
+
+
+def run_gobuster(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    _delay(mode)
+    bin_path = _tool("gobuster")
+    if not bin_path:
+        return ToolResult(tool="gobuster", status=ToolStatus.SKIPPED, error="not installed")
+
+    wordlists_aggressive = [
+        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt",
+        "/usr/share/wordlists/dirb/big.txt",
+    ]
+    wordlists_balanced = [
+        "/usr/share/seclists/Discovery/Web-Content/common.txt",
+        "/usr/share/wordlists/dirb/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/raft-small-words.txt",
+    ]
+    wordlists = wordlists_aggressive if mode == MODE_AGGRESSIVE else wordlists_balanced
+    wordlist  = next((w for w in wordlists if Path(w).exists()), None)
+    if not wordlist:
+        log.warning("[gobuster] no wordlist found — skipping (apt install seclists)")
+        return ToolResult(tool="gobuster", status=ToolStatus.SKIPPED,
+                          error="no wordlist found")
+
+    out      = dirs.raw_file(f"gobuster_{target.domain}.txt")
+    threads  = "80" if mode == MODE_AGGRESSIVE else "50"
+    result = run_tool("gobuster",
+                    ["gobuster", "dir",
+                     "-u", target.url,
+                     "-w", wordlist,
+                     "-a", _ua(),
+                     "-o", out,
+                     "-b", "404,301,302",
+                     "-t", threads,
+                     "--timeout", "8s",
+                     "-q"],
+                    timeout=300)
+
+    # Save raw output to evidence
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "gobuster.txt").write_text(content)
+
+    return result
+
+
+def run_sslscan(target: Target, dirs: ScanDirs) -> ToolResult:
+    bin_path = _tool("sslscan")
+    if not bin_path:
+        return ToolResult(tool="sslscan", status=ToolStatus.SKIPPED, error="not installed")
+    result = run_tool("sslscan",
+                    ["sslscan", "--no-colour", target.domain],
+                    timeout=60,
+                    output_file=dirs.raw_file(f"sslscan_{target.domain}.txt"))
+
+    # Save raw output to evidence
+    out = dirs.raw_file(f"sslscan_{target.domain}.txt")
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "sslscan.txt").write_text(content)
+
+    return result
+
+
+def run_curl_headers(target: Target, dirs: ScanDirs) -> ToolResult:
+    result = run_tool("curl",
+                    ["curl", "-s", "-I", "-L",
+                     "--max-redirs", "5",
+                     "-A", _ua(),
+                     "--connect-timeout", "8",
+                     "--max-time", "15",
+                     target.url],
+                    timeout=20,
+                    output_file=dirs.raw_file(f"curl_headers_{target.domain}.txt"))
+
+    # Save raw output to evidence
+    out = dirs.raw_file(f"curl_headers_{target.domain}.txt")
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "curl_headers.txt").write_text(content)
+
+    return result
+
+
+def run_nuclei(target: Target, dirs: ScanDirs, mode: str = MODE_BALANCED) -> ToolResult:
+    bin_path = _tool("nuclei")
+    if not bin_path:
+        return ToolResult(tool="nuclei", status=ToolStatus.SKIPPED, error="not installed")
+
+    out = dirs.raw_file(f"nuclei_{target.domain}.txt")
+    if mode == MODE_AGGRESSIVE:
+        cmd = [
+            bin_path, "-u", target.url, "-o", out, "-silent",
+            "-timeout", "10", "-rate-limit", "150",
+            "-bulk-size", "30", "-c", "30",
+        ]
+        timeout = 900
+    else:
+        cmd = [
+            bin_path, "-u", target.url, "-o", out, "-silent",
+            "-severity", "critical,high,medium",
+            "-tags", "cve,exposure,misconfig,default-login,takeover",
+            "-timeout", "8", "-rate-limit", "80",
+            "-bulk-size", "20", "-c", "20",
+        ]
+        timeout = 300
+
+    result = run_tool("nuclei", cmd, timeout=timeout)
+
+    # Save raw output to evidence
+    if result.ok and Path(out).exists():
+        content = Path(out).read_text()
+        Path(dirs.evidence / "nuclei.txt").write_text(content)
+
+    return result
+
+
+# ── Nmap XML parser ───────────────────────────────────────────────────────────
+
+def parse_nmap_xml(xml_path: str) -> list[dict]:
+    """
+    Parse nmap XML output. Returns list of open port dicts.
+    Returns [] gracefully if file missing or malformed.
+    """
+    try:
+        tree = ET.parse(xml_path)
+    except Exception as exc:
+        log.warning("[nmap:parse] %s — %s", xml_path, exc)
+        return []
+
+    results = []
+    for port in tree.getroot().findall(".//port"):
+        state_el = port.find("state")
+        if state_el is None or state_el.get("state") != "open":
+            continue
+        svc = port.find("service")
+        ver_parts = []
+        if svc is not None:
+            for attr in ["product", "version", "extrainfo"]:
+                v = svc.get(attr, "")
+                if v:
+                    ver_parts.append(v)
+        results.append({
+            "port":     port.get("portid"),
+            "protocol": port.get("protocol", "tcp"),
+            "state":    "open",
+            "service":  svc.get("name", "unknown") if svc is not None else "unknown",
+            "version":  " ".join(ver_parts),
+            "cpe":      [c.text for c in port.findall(".//cpe") if c.text],
+        })
+    log.debug("[nmap:parse] %d open ports from %s", len(results), xml_path)
+    return results
+
+
+# ── Parallel orchestrator ─────────────────────────────────────────────────────
 
 class ParallelOrchestrator:
     """
-    Runs the full scan suite across multiple hosts.
+    Coordinates the full scan suite for one or more hosts.
 
-    Per-host: OSINT tools run first (no delay, fast).
-    Then nmap. Then web tools all run in parallel threads — their individual
-    delays don't stack sequentially.
-    Nuclei runs after ports are known (needs to know if web is up).
+    Uses ExecutionPipeline for per-host step management.
+    All tools run through run_tool() — no direct subprocess calls.
+    Pipeline continues even if individual tools fail or timeout.
     """
 
     MAX_WORKERS = {MODE_BALANCED: 4, MODE_AGGRESSIVE: 6}
 
-    def __init__(self, mode: str = MODE_BALANCED):
+    def __init__(self, mode: str = MODE_BALANCED) -> None:
         self.mode        = mode
         self.max_workers = self.MAX_WORKERS.get(mode, 4)
-        self.results: dict[str, dict] = {}
-        logger.info("Orchestrator: mode=%s  workers=%d",
-                    self.mode, self.max_workers)
+        log.info("[orchestrator] mode=%s workers=%d", mode, self.max_workers)
 
-    def run_scan_suite(self, hosts: list[str]) -> dict[str, dict]:
-        logger.info("Scanning %d host(s) in parallel.", len(hosts))
+    def run_scan_suite(self, hosts: list[str], dirs: ScanDirs) -> dict[str, dict]:
+        """Scan all hosts in parallel. Returns {host: result_dict}."""
+        log.info("[orchestrator] scanning %d host(s)", len(hosts))
+        results: dict[str, dict] = {}
+
         with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            fmap = {ex.submit(self._scan_single_host, h): h for h in hosts}
-            for future in as_completed(fmap):
-                host = fmap[future]
+            future_map = {
+                ex.submit(self.scan_host, h, dirs): h
+                for h in hosts
+            }
+            for future in as_completed(future_map):
+                host = future_map[future]
                 try:
-                    self.results[host] = future.result()
+                    results[host] = future.result()
                 except Exception as exc:
-                    logger.error("Scan failed %s: %s", host, exc)
-                    self.results[host] = {"host": host, "error": str(exc)}
-        return self.results
+                    log.error("[orchestrator] host %s failed: %s", host, exc)
+                    results[host] = {"host": host, "error": str(exc),
+                                     "nmap": [], "open_ports": []}
+        return results
 
-    def _scan_single_host(self, host: str) -> dict:
-        logger.info("━━━ Scanning: %s [%s] ━━━", host, self.mode)
+    def scan_host(self, host: str, dirs: ScanDirs) -> dict:
+        """
+        Public host scan API used by callers outside this class.
+        """
+        return self._scan_single_host(host, dirs)
+
+    def _scan_single_host(self, host: str, dirs: ScanDirs) -> dict:
         target = Target(host)
-        result = {"host": host, "nmap": [], "open_ports": [], "error": None}
+        log.info("━━━ scanning: %s [%s] ━━━", host, self.mode)
 
-        # ── OSINT (no delays — purely read-only lookups) ───────────────
-        with ThreadPoolExecutor(max_workers=3) as osint:
-            osint.submit(ScannerKit.run_whois,    target).result()
-            osint.submit(ScannerKit.run_dig,      target).result()
-            osint.submit(ScannerKit.run_nslookup, target).result()
+        result: dict = {
+            "host":       host,
+            "nmap":       [],
+            "open_ports": [],
+            "error":      None,
+            "tool_status":{},
+        }
 
-        # ── Technology fingerprint + WAF (parallel, small delay each) ──
-        with ThreadPoolExecutor(max_workers=2) as fp:
-            f_ww  = fp.submit(ScannerKit.run_whatweb, target, self.mode)
-            f_waf = fp.submit(ScannerKit.run_wafw00f, target, self.mode)
-            f_ww.result()
-            f_waf.result()
+        # Build pipeline for this host
+        pipeline = ExecutionPipeline(name=target.domain)
 
-        # ── Port scan ──────────────────────────────────────────────────
-        nmap_results        = ScannerKit.run_nmap(target, mode=self.mode)
-        result["nmap"]      = nmap_results
-        open_ports          = {r["port"] for r in nmap_results}
-        result["open_ports"] = list(open_ports)
+        # OSINT — fast, no delays, no web contact
+        pipeline.add("whois",  lambda: run_whois(target, dirs))
+        pipeline.add("dig",    lambda: run_dig(target, dirs))
 
-        # ── Web tools — all run in parallel ───────────────────────────
-        has_web = bool(
-            open_ports & {"80", "443", "8080", "8443", "8000", "8888"}
-        ) or host.startswith("http")
+        # Fingerprint — parallel pair
+        pipeline.add("whatweb", lambda: run_whatweb(target, dirs, self.mode))
+        pipeline.add("wafw00f", lambda: run_wafw00f(target, dirs, self.mode))
 
-        if has_web:
-            with ThreadPoolExecutor(max_workers=4) as web:
-                futures = {
-                    web.submit(ScannerKit.run_nikto,    target, self.mode): "nikto",
-                    web.submit(ScannerKit.run_curl_recon, target, self.mode): "curl",
-                    web.submit(ScannerKit.run_gobuster, target, self.mode): "gobuster",
-                }
-                if "443" in open_ports or host.startswith("https"):
-                    futures[web.submit(ScannerKit.run_sslscan, target, self.mode)] = "sslscan"
-                for f in as_completed(futures):
-                    tool = futures[f]
-                    try:
-                        f.result()
-                    except Exception as exc:
-                        logger.warning("[%s] Error: %s", tool, exc)
+        # Port scan — must run before web tools
+        def _nmap():
+            r = run_nmap(target, dirs, self.mode)
+            nmap_out = dirs.raw_file(f"nmap_{target.domain}.xml")
+            ports = parse_nmap_xml(nmap_out) if r.status != ToolStatus.FAILED else []
+            result["nmap"]       = ports
+            result["open_ports"] = [p["port"] for p in ports]
+            return r
 
-        # ── Nuclei (template-based CVEs — after we know what's running) ─
-        if has_web or open_ports:
-            ScannerKit.run_nuclei(target, mode=self.mode)
+        pipeline.add("nmap", _nmap)
 
-        logger.info("━━━ Done: %s  ports=%s ━━━",
-                    host, result["open_ports"] or "none")
+        # Web tools — run only if web ports found
+        def _web_tools():
+            open_ports = set(result.get("open_ports", []))
+            has_web = (
+                bool(open_ports & {"80","443","8080","8443","8000","8888"})
+                or host.startswith("http")
+            )
+            if not has_web:
+                log.info("[%s] no web ports — skipping web tools", target.domain)
+                return ToolResult(tool="web_tools", status=ToolStatus.SKIPPED,
+                                  error="no web ports detected")
+
+            web_pipeline = ExecutionPipeline(name=f"{target.domain}:web")
+            web_pipeline.add("nikto",   lambda: run_nikto(target, dirs, self.mode))
+            web_pipeline.add("curl",    lambda: run_curl_headers(target, dirs))
+            web_pipeline.add("gobuster",lambda: run_gobuster(target, dirs, self.mode))
+            if "443" in open_ports or host.startswith("https"):
+                web_pipeline.add("sslscan", lambda: run_sslscan(target, dirs))
+            web_pipeline.run()
+            return ToolResult(tool="web_tools", status=ToolStatus.SUCCESS)
+
+        pipeline.add("web_tools", _web_tools)
+
+        # Nuclei — after ports are known
+        def _nuclei():
+            open_ports = set(result.get("open_ports", []))
+            has_web    = bool(open_ports) or host.startswith("http")
+            if not has_web:
+                return ToolResult(tool="nuclei", status=ToolStatus.SKIPPED,
+                                  error="no ports")
+            return run_nuclei(target, dirs, self.mode)
+
+        pipeline.add("nuclei", _nuclei)
+
+        # Run everything
+        tool_results = pipeline.run()
+        result["tool_status"] = {k: v.status.value for k, v in tool_results.items()}
+        for name, tr in tool_results.items():
+            if tr.status in {ToolStatus.FAILED, ToolStatus.TIMEOUT, ToolStatus.SKIPPED}:
+                log.warning("[%s] %s", target.domain, _failure_message(name, tr.status, tr.error))
+
+        log.info("━━━ done: %s  ports=%s ━━━",
+                 host, result["open_ports"] or "none")
         return result
+
+
+# ── Subdomain discovery (separate from per-host pipeline) ────────────────────
+
+class ScannerKit:
+    """
+    Static helpers for subdomain discovery and host filtering.
+    Used by main.py before per-host scanning begins.
+    """
+
+    @staticmethod
+    def discover_subdomains(target: Target, dirs: ScanDirs) -> list[str]:
+        """Run subfinder + assetfinder, merge results, return unique list."""
+        subs: set[str] = set()
+
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_sf = ex.submit(run_subfinder, target, dirs)
+            f_af = ex.submit(run_assetfinder, target, dirs)
+            sf = f_sf.result()
+            af = f_af.result()
+
+        if sf.ok:
+            subs_file = dirs.raw_file("subdomains.txt")
+            if Path(subs_file).exists():
+                subs.update(
+                    s.strip() for s in Path(subs_file).read_text().splitlines()
+                    if s.strip()
+                )
+
+        if af.ok and af.stdout:
+            subs.update(
+                s.strip() for s in af.stdout.splitlines()
+                if s.strip() and target.domain in s
+            )
+
+        if subs:
+            merged = dirs.raw_file("subdomains_all.txt")
+            Path(merged).write_text("\n".join(sorted(subs)))
+
+        log.info("[discovery] %d unique subdomains found", len(subs))
+        return sorted(subs)
+
+    @staticmethod
+    def filter_live_hosts(subs: list[str], dirs: ScanDirs) -> list[str]:
+        """Run httpx to filter live HTTP/S hosts from subdomain list."""
+        if not subs:
+            return []
+        subs_file = dirs.raw_file("subdomains_all.txt")
+        result = run_httpx(subs_file, dirs)
+        if not result.ok:
+            return []
+        live_file = dirs.raw_file("live_hosts.txt")
+        if not Path(live_file).exists():
+            return []
+        hosts = [h.strip() for h in Path(live_file).read_text().splitlines() if h.strip()]
+        log.info("[discovery] %d live hosts after httpx", len(hosts))
+        return hosts

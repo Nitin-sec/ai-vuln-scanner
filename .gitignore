@@ -1,15 +1,5 @@
-# Python
+.venv/
 __pycache__/
 *.pyc
-
-# Virtual env
-venv/
-
-# Database
 *.db
-
-# Reports / outputs
 reports/
-
-# OS
-.DS_Store

@@ -1,0 +1,20 @@
+
+=== A ===
+45.33.32.156
+
+
+=== AAAA ===
+2600:3c01::f03c:91ff:fe18:bb2f
+
+
+=== MX ===
+(none)
+
+=== NS ===
+(none)
+
+=== TXT ===
+(none)
+
+=== SOA ===
+;; communications error to 192.168.1.1#53: timed out

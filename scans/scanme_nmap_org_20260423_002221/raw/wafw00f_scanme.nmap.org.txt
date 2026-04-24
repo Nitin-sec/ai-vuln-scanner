@@ -1,0 +1,19 @@
+
+                [1;97m______
+               [1;97m/      \
+              [1;97m(  W00f! )
+               [1;97m\  ____/
+               [1;97m,,    [1;92m__            [1;93m404 Hack Not Found
+           [1;96m|`-.__   [1;92m/ /                     [1;91m __     __
+           [1;96m/"  _/  [1;92m/_/                       [1;91m\ \   / /
+          [1;94m*===*    [1;92m/                          [1;91m\ \_/ /  [1;93m405 Not Allowed
+         [1;96m/     )__//                           [1;91m\   /
+    [1;96m/|  /     /---`                        [1;93m403 Forbidden
+    [1;96m\\/`   \ |                                 [1;91m/ _ \
+    [1;96m`\    /_\\_              [1;93m502 Bad Gateway  [1;91m/ / \ \  [1;93m500 Internal Error
+      [1;96m`_____``-`                             [1;91m/_/   \_\\
+
+                        [1;96m~ WAFW00F : [1;94mv2.3.1 ~[1;97m
+        The Web Application Firewall Fingerprinting Toolkit
+    [0m
+[*] Checking https://scanme.nmap.org
