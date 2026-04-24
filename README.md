@@ -78,44 +78,7 @@ Scan output is written to `scans/<target>_<timestamp>/logs/scan.log` during the 
 
 ## AI-Powered Triage (Optional)
 
-ThreatMap Infra works **fully without any AI configuration**.  The rule-based engine handles severity scoring, CVSS mapping, and remediation templates automatically.
-
-To enable AI-enhanced triage, set one of the following before running:
-
-### Option A — Groq (Free, Recommended)
-
-Get a free key at [console.groq.com](https://console.groq.com) — no credit card needed.
-
-```bash
-export THREATMAP_LLM_PROVIDER=groq
-export THREATMAP_LLM_API_KEY=gsk_your_key_here
-```
-
-### Option B — OpenAI
-
-```bash
-pip install openai
-export THREATMAP_LLM_PROVIDER=openai
-export THREATMAP_LLM_API_KEY=sk-your_key_here
-```
-
-### Option C — Local Ollama (Advanced / Air-gapped)
-
-```bash
-# Requires Ollama running: https://ollama.ai
-export THREATMAP_LLM_PROVIDER=ollama
-export THREATMAP_LLM_MODEL=llama3   # optional, defaults to llama3
-```
-
-If Ollama is configured but not reachable, the tool automatically falls back to rule-based triage with no crash.
-
-| User type | Config | Works? |
-|---|---|---|
-| No config | Nothing | ✅ Full functionality, rule-based triage |
-| Free user | Groq key (2 min setup) | ✅ AI-enhanced, free |
-| Enterprise | OpenAI key | ✅ AI-enhanced, their infra |
-| Air-gapped | Ollama running | ✅ Fully local |
-| Ollama off | Ollama configured but down | ✅ Auto-fallback to rules |
+ThreatMap Infra includes built-in local analysis using SLM (Small Language Model) for enhanced triage and remediation suggestions. No external APIs or keys required.
 
 ---
 

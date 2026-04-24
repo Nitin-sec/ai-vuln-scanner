@@ -30,6 +30,7 @@ from rich.progress import (
     TextColumn, TimeElapsedColumn, TaskProgressColumn,
 )
 from rich import box
+from rich.panel import Panel
 
 from scan_logger    import configure as configure_logging, get_logger
 from env_check      import ToolRegistry, ScanDirs
@@ -72,23 +73,13 @@ def _e(msg):  console.print(f"  [bold red][[-]][/bold red]  {msg}")
 
 
 def _banner() -> None:
-    console.print()
-    for line in [
-        "  ████████╗██╗  ██╗██████╗ ███████╗ █████╗ ████████╗███╗   ███╗ █████╗ ██████╗  ",
-        "     ██╔══╝██║  ██║██╔══██╗██╔════╝██╔══██╗╚══██╔══╝████╗ ████║██╔══██╗██╔══██╗ ",
-        "     ██║   ███████║██████╔╝█████╗  ███████║   ██║   ██╔████╔██║███████║██████╔╝  ",
-        "     ██║   ██╔══██║██╔══██╗██╔══╝  ██╔══██║   ██║   ██║╚██╔╝██║██╔══██║██╔═══╝   ",
-        "     ██║   ██║  ██║██║  ██║███████╗██║  ██║   ██║   ██║ ╚═╝ ██║██║  ██║██║        ",
-        "     ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝       ",
-    ]:
-        console.print(f"[bold red]{line}[/bold red]")
-    console.print()
+    console.print("\n[bold red]THREATMAP[/bold red]\n")
     info = Table.grid(padding=(0,4))
     info.add_column(min_width=12); info.add_column()
     info.add_row("[dim]Version[/dim]",   "[white]1.0[/white]  [dim]·  VAPT + EASM Scanner[/dim]")
     info.add_row("[dim]Platform[/dim]",  "[white]Kali Linux[/white]  [dim]·  Authorized use only[/dim]")
     info.add_row("[dim]Storage[/dim]",   "[white]100% Local[/white]  [dim]·  No data leaves your machine[/dim]")
-    info.add_row("[dim]AI Analysis[/dim]", "[white]Optional Enhancement[/white]")
+    info.add_row("[dim]Local Analysis (SLM)[/dim]", "[white]Built-in[/white]")
     console.print(info)
     console.print()
     # console.print(Rule(style="dim red"))

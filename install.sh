@@ -126,6 +126,7 @@ inf "Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null
 "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null
 "$VENV_DIR/bin/pip" install --quiet questionary 2>/dev/null || true
+"$VENV_DIR/bin/pip" install --quiet llama-cpp-python 2>/dev/null || true
 ok "Python packages installed"
 
 # ── Permissions ─────────────────────────────────────────────
@@ -168,9 +169,3 @@ ok "Setup complete."
 printf "\n  ${W}To run ThreatMap:${N}\n"
 printf "  ${D}$ ${N}${W}./threatmap${N}\n\n"
 printf "  ${D}Reports will be saved to: ~/ThreatMap-Reports/${N}\n\n"
-
-printf "  ${Y}Optional: Enable AI triage (free, no API key needed):${N}\n"
-printf "  ${D}Get a free key at https://console.groq.com${N}\n"
-printf "  ${D}Then run:${N}\n"
-printf "  export THREATMAP_LLM_PROVIDER=groq\n"
-printf "  export THREATMAP_LLM_API_KEY=gsk_yourkey\n\n"

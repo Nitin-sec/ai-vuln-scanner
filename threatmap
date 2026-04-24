@@ -3,8 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-VENV_DIR="$SCRIPT_DIR/venv"
-VENV_ACTIVATE="$VENV_DIR/bin/activate"
+
+if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+    VENV_ACTIVATE="$SCRIPT_DIR/venv/Scripts/activate"
+else
+    VENV_ACTIVATE="$SCRIPT_DIR/venv/bin/activate"
+fi
 
 if [ ! -f "$VENV_ACTIVATE" ]; then
     echo "[!] Virtual environment not found."
