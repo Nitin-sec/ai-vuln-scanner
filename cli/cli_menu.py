@@ -22,7 +22,7 @@ from typing import Optional
 
 import questionary
 from rich.console import Console
-from rich.rule import Rule
+from rich.panel import Panel
 
 from core.scan_logger import get_logger
 
@@ -235,7 +235,6 @@ def show_logs(log_path: str, tail_lines: int = 30) -> None:
         if len(clean) > tail_lines:
             _i(f"Showing last {tail_lines} of {len(clean)} log lines")
         console.print()
-        console.print(Rule(style="dim"))
         for line in tail:
             # Colour-code log levels for readability
             if " ERROR " in line or " CRITICAL " in line:
@@ -246,16 +245,14 @@ def show_logs(log_path: str, tail_lines: int = 30) -> None:
                 console.print(f"  [dim]{line}[/dim]")
             else:
                 console.print(f"  [dim]{line}[/dim]")
-        console.print(Rule(style="dim"))
+        console.print()
     except Exception as exc:
         _e(f"Could not read log: {exc}")
 
 
 def show_report_paths(paths: dict[str, str]) -> None:
     """Print all generated report paths in a clean table."""
-    console.print()
-    console.print(Rule("[dim]Generated Reports[/dim]", style="dim green"))
-    console.print()
+    console.print(Panel.fit("[bold green]Generated Reports[/bold green]", expand=False))
     labels = {"html":"HTML Report ","txt":"Text Report ","json":"JSON Data   "}
     for fmt, path in paths.items():
         label = labels.get(fmt, fmt.upper())
@@ -298,7 +295,7 @@ class PostScanMenu:
             open_in_browser(html)
             console.print()
 
-        console.print(Rule("[dim]What would you like to do?[/dim]", style="dim"))
+        console.print(Panel.fit("[dim]What would you like to do?[/dim]", expand=False))
         console.print()
 
         while True:
@@ -325,8 +322,6 @@ class PostScanMenu:
             console.print()
             self._handle(choice)
             console.print()
-            console.print(Rule(style="dim"))
-            console.print()
 
     def _build_choices(self) -> list[dict]:
         choices = []
@@ -340,10 +335,8 @@ class PostScanMenu:
             choices.append({"name": "📊  Export as Excel (.xlsx)", "value": "xlsx"})
 
         choices.append({"name": "📋  Show Report File Paths", "value": "paths"})
-        choices.append({"name": "🔍  View Raw Scan Log",      "value": "logs"})
-        choices.append({"name": "🔁  Continue Scanning",      "value": "continue"})
-        choices.append({"name": "──────────────────────",    "value": "sep",
-                        "disabled": "─"})
+        choices.append({"name": "📄  View Scan Logs",         "value": "logs"})
+        choices.append({"name": "🔁  Continue Scanning",     "value": "continue"})
         choices.append({"name": "🚪  Exit",                   "value": "exit"})
 
         return choices

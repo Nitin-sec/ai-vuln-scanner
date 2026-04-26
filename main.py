@@ -24,7 +24,6 @@ except ImportError:
 
 from rich.console import Console
 from rich.table   import Table
-from rich.rule    import Rule
 from rich.progress import (
     Progress, SpinnerColumn, BarColumn,
     TextColumn, TimeElapsedColumn, TaskProgressColumn,
@@ -90,39 +89,6 @@ def _banner() -> None:
     info.add_row("[dim]Local Analysis (SLM)[/dim]", "[white]Built-in[/white]")
     console.print(info)
     console.print()
-
-
-def _show_summary(triage_rows: list, host_id_map: dict) -> bool:
-    console.print()
-    console.print(Rule("[dim]Scan Results[/dim]", style="dim green"))
-    console.print()
-    if not triage_rows:
-        _w("No open ports or findings detected.")
-        _i("Tip: try [bold]scanme.nmap.org[/bold] as a safe public test target")
-        return False
-    sev_counts: dict[str,int] = {}
-    for r in triage_rows:
-        sev_counts[r["severity"]] = sev_counts.get(r["severity"], 0) + 1
-    t = Table(box=box.SIMPLE, show_header=True, header_style="bold dim",
-              pad_edge=False, show_edge=False)
-    t.add_column("  Severity", min_width=12, style="bold")
-    t.add_column("  Count",    min_width=7,  justify="right")
-    t.add_column("  SLA",      min_width=26, style="dim")
-    for sev in SEV_ORDER:
-        cnt = sev_counts.get(sev, 0)
-        if cnt > 0:
-            col = SEV_COLOR.get(sev,"white")
-            t.add_row(f"  [{col}]{sev}[/{col}]",
-                      f"  [{col}]{cnt}[/{col}]",
-                      f"  {SEV_SLA.get(sev,'')}")
-    t.add_section()
-    t.add_row("  [dim]Hosts[/dim]", f"  [white]{len(host_id_map)}[/white]", "")
-    t.add_row("  [dim]Findings[/dim]",
-              f"  [white]{len(triage_rows)}[/white]",
-              "")
-    console.print(t)
-    console.print()
-    return True
 
 
 def main() -> str:
@@ -227,7 +193,7 @@ def main() -> str:
         console=console, transient=False,
     ) as progress:
 
-        disc = progress.add_task("[Discovery] Target Expansion", total=3)
+        disc = progress.add_task("Discovery: Target Expansion", total=3)
         if full_scan:
             subs = ScannerKit.discover_subdomains(target, dirs)
             progress.advance(disc); progress.advance(disc)
@@ -237,7 +203,7 @@ def main() -> str:
             live_hosts = [target.url]
             progress.update(disc, completed=3)
 
-        task_scan    = progress.add_task("[Scanning] Host & Port Analysis", total=len(live_hosts))
+        task_scan    = progress.add_task("Scanning: Host & Port Analysis", total=len(live_hosts))
         orchestrator = ParallelOrchestrator(mode=mode)
         scan_results : dict[str,dict] = {}
         lock = threading.Lock()
@@ -261,31 +227,24 @@ def main() -> str:
             progress.advance(task_db)
 
         http_hosts = [h for h in host_id_map if h.startswith("http")]
-        task_ev = progress.add_task("[Web Analysis] HTTP Evidence Collection", total=max(len(http_hosts),1))
+        task_ev = progress.add_task("Web analysis: HTTP Evidence Collection", total=max(len(http_hosts),1))
         if http_hosts:
             EvidenceCollector().probe_hosts(hosts=http_hosts, output_dir=dirs.report_dir)
         progress.update(task_ev, completed=max(len(http_hosts),1))
 
-        task_ai = progress.add_task("[Vulnerability Analysis] Risk Classification", total=1)
+        task_ai = progress.add_task("Vulnerability analysis: Risk Classification", total=1)
         with contextlib.redirect_stderr(io.StringIO()):
             run_ai_triage(db=db, scan_id=scan_id, raw_dir=dirs.raw_dir, report_dir=dirs.report_dir)
         progress.advance(task_ai)
 
         db.complete_scan(scan_id)
 
-        task_rep = progress.add_task("[Report Generation] Building Output Files", total=1)
+        task_rep = progress.add_task("Generating report files", total=1)
         report_paths = generate_all_reports(db=db, scan_id=scan_id, output_dir=save_dir)
         progress.advance(task_rep)
 
-    # 8. Summary
-    triage_rows  = db.get_triage_by_scan(scan_id)
-    has_findings = _show_summary(triage_rows, host_id_map)
-
-    if not has_findings:
-        _i(f"Scan log → [cyan]{dirs.log_file}[/cyan]")
-        console.print()
-        return "exit"
-
+    console.print()
+    _ok("Scan complete.")
     console.print()
 
     action = PostScanMenu(

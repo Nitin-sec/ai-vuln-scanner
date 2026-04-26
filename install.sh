@@ -112,22 +112,27 @@ if command -v nuclei &>/dev/null; then
 fi
 
 # ── Python environment ────────────────────────────────────────
-hdr "Python Environment"
-VENV_DIR="$SCRIPT_DIR/venv"
-VENV_PY="$VENV_DIR/bin/python"
+echo "[*] Setting up Python virtual environment..."
 
-if [ ! -f "$VENV_PY" ]; then
-    inf "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
-    ok "Virtual environment created"
+if [ ! -d "venv" ]; then
+  python3 -m venv venv || {
+    echo "[!] Failed to create virtual environment. Install python3-venv"
+    exit 1
+  }
 fi
 
-inf "Installing Python dependencies..."
-"$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null
-"$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null
-"$VENV_DIR/bin/pip" install --quiet questionary 2>/dev/null || true
-"$VENV_DIR/bin/pip" install --quiet llama-cpp-python 2>/dev/null || true
-ok "Python packages installed"
+source venv/bin/activate
+
+echo "[*] Installing Python dependencies..."
+
+python -m pip install --upgrade pip
+
+python -m pip install -r requirements.txt || {
+  echo "[!] Failed to install dependencies"
+  exit 1
+}
+
+echo "[✔] Python environment ready"
 
 # ── Permissions ─────────────────────────────────────────────
 hdr "Permissions"
